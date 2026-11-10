@@ -259,6 +259,26 @@ fn themed(code: &str, p: &Palette) -> String {
     format!("%%{{init: {config}}}%%\n{code}")
 }
 
+/// A diagram as an SVG picture for export, in the colours of `p`.
+pub fn svg(code: &str, p: &Palette) -> Result<String, String> {
+    use merman::{OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
+
+    let code = themed(code, p);
+    let request = SvgRequest {
+        environment: environment()?.clone(),
+        ..Default::default()
+    };
+    let render =
+        move || Renderer::new().render(RenderRequest::svg(&code, OperationControl::new(), request));
+    let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(render))
+        .map_err(|_| "this diagram could not be drawn".to_string())?
+        .map_err(|error| error.to_string())?;
+    match output {
+        RenderOutput::Svg(Some(svg)) => Ok(svg.svg().to_string()),
+        _ => Err("no diagram found in this block".to_string()),
+    }
+}
+
 /// Measuring and drawing text must use the same font or labels overflow their
 /// boxes, so the font is loaded once and handed to both.
 fn environment() -> Result<&'static merman::SvgEnvironment, String> {

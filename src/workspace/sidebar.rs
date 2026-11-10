@@ -70,7 +70,10 @@ impl Workspace {
 
         v_flex()
             .size_full()
-            .child(self.render_jump_field(&p))
+            .child(
+                self.render_jump_field(&p)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx))),
+            )
             .child(
                 h_flex()
                     .flex_none()
@@ -93,7 +96,7 @@ impl Workspace {
     }
 
     /// Looks like a field; opens the command palette.
-    fn render_jump_field(&self, p: &Palette) -> impl IntoElement + use<> {
+    fn render_jump_field(&self, p: &Palette) -> Stateful<Div> {
         h_flex()
             .id("jump")
             .flex_none()

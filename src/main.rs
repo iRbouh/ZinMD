@@ -7,6 +7,7 @@
 
 mod assets;
 mod doc;
+mod export;
 mod files;
 mod preview;
 #[cfg(feature = "shot")]

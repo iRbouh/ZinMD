@@ -1,6 +1,7 @@
 //! The main window: open documents, the layout around them, and the commands
 //! that change either. Each strip of the window draws itself in a submodule.
 
+mod palette;
 mod panes;
 mod sidebar;
 mod statusbar;
@@ -39,6 +40,8 @@ actions!(
         ToggleSidebar,
         ToggleScrollSync,
         ToggleTheme,
+        OpenPalette,
+        ExportHtml,
         Quit
     ]
 );
@@ -59,6 +62,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-2", ViewSplit, None),
         KeyBinding::new("cmd-3", ViewPreview, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
+        KeyBinding::new("cmd-k", OpenPalette, None),
+        KeyBinding::new("cmd-p", OpenPalette, None),
+        KeyBinding::new("cmd-shift-e", ExportHtml, None),
         KeyBinding::new("cmd-q", Quit, None),
     ]);
     // Reached only when no window is there to ask about unsaved changes.
@@ -76,6 +82,7 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Save", Save),
             MenuItem::action("Save As…", SaveAs),
+            MenuItem::action("Export as HTML…", ExportHtml),
             MenuItem::separator(),
             MenuItem::action("Close Tab", CloseTab),
         ]),
@@ -95,6 +102,7 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Split", ViewSplit),
             MenuItem::action("Preview", ViewPreview),
             MenuItem::separator(),
+            MenuItem::action("Command Palette…", OpenPalette),
             MenuItem::action("Show or Hide Sidebar", ToggleSidebar),
             MenuItem::action("Turn Scroll Sync On or Off", ToggleScrollSync),
             MenuItem::action("Switch Light and Dark", ToggleTheme),
@@ -146,6 +154,9 @@ pub struct Workspace {
     sync_enabled: bool,
     tree: FileTree,
     tree_scroll: UniformListScrollHandle,
+    /// Every Markdown file under the open folder, for the command palette.
+    file_index: Vec<PathBuf>,
+    palette: Option<palette::CommandPalette>,
     /// Widths of the sidebar and the document area.
     sidebar_split: Entity<ResizableState>,
     /// Widths of the editor and the preview.
@@ -176,6 +187,8 @@ impl Workspace {
             sync_enabled: true,
             tree: FileTree::default(),
             tree_scroll: UniformListScrollHandle::new(),
+            file_index: Vec::new(),
+            palette: None,
             sidebar_split: cx.new(|_| ResizableState::default()),
             pane_split: cx.new(|_| ResizableState::default()),
             focus: cx.focus_handle(),
@@ -606,6 +619,47 @@ impl Workspace {
         .detach();
     }
 
+    /// Write the open document as a standalone HTML page, where the user chooses.
+    pub(super) fn export_html(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc() else { return };
+        let (text, name) = (doc.text.clone(), doc.name.clone());
+        let folder = doc
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_default();
+        let suggested = Path::new(name.as_ref()).with_extension("html");
+        let chosen = cx.prompt_for_new_path(&folder, suggested.to_str());
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            // Diagrams are drawn during export, which can take a moment.
+            let page = cx
+                .background_executor()
+                .spawn(async move { crate::export::html(&text, &name) })
+                .await;
+            let written = std::fs::write(&path, page);
+            cx.update(|window, cx| match written {
+                Ok(()) => cx.reveal_path(&path),
+                Err(error) => {
+                    let detail = error.to_string();
+                    drop(window.prompt(
+                        PromptLevel::Critical,
+                        "The page could not be exported.",
+                        Some(&detail),
+                        &["OK"],
+                        cx,
+                    ));
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -635,11 +689,12 @@ impl Workspace {
             root: root.clone(),
             rows: Vec::new(),
         };
+        self.file_index.clear();
         cx.notify();
         let Some(root) = root else { return };
         let reveal = self.active_doc().and_then(|doc| doc.path.clone());
         cx.spawn(async move |this, cx| {
-            let tree = cx
+            let (tree, index) = cx
                 .background_executor()
                 .spawn(async move {
                     let mut tree = FileTree {
@@ -649,13 +704,18 @@ impl Workspace {
                     if let Some(path) = reveal {
                         tree.reveal(&path);
                     }
-                    tree
+                    let index = tree
+                        .root
+                        .as_deref()
+                        .map(|root| palette::index_files(root, 5000));
+                    (tree, index.unwrap_or_default())
                 })
                 .await;
             this.update(cx, |this, cx| {
                 // Unless another folder was chosen while this one was being read.
                 if this.tree.root == tree.root {
                     this.tree = tree;
+                    this.file_index = index;
                     cx.notify();
                 }
             })
@@ -766,6 +826,15 @@ impl Workspace {
             "open" => self.open(PathBuf::from(argument), window, cx),
             "save" => self.save_doc(id, false, window, cx).detach(),
             "close" => self.request_close(self.active, window, cx),
+            "palette" => self.open_palette(window, cx),
+            "export" => {
+                let doc = &self.docs[self.active];
+                if let Err(error) =
+                    std::fs::write(argument, crate::export::html(&doc.text, &doc.name))
+                {
+                    eprintln!("export failed: {error}");
+                }
+            }
             "link" => self.follow_link(argument, window, cx),
             "check" => {
                 // Click the n-th task checkbox, as the preview would report it.
@@ -823,9 +892,11 @@ impl Render for Workspace {
         let sidebar = self.render_sidebar(cx);
         let panes = self.render_panes(window, cx);
         let statusbar = self.render_statusbar(cx);
+        let palette = self.render_palette(cx);
 
         v_flex()
             .id("workspace")
+            .relative()
             .size_full()
             .bg(p.surface_app)
             .text_color(p.text_primary)
@@ -860,6 +931,13 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &ToggleScrollSync, _, cx| this.toggle_scroll_sync(cx)))
             .on_action(cx.listener(|_, _: &ToggleTheme, _, cx| theme::toggle(cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenPalette, window, cx| match this.palette {
+                    Some(_) => this.close_palette(window, cx),
+                    None => this.open_palette(window, cx),
+                }),
+            )
+            .on_action(cx.listener(|this, _: &ExportHtml, window, cx| this.export_html(window, cx)))
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.quit(window, cx)))
             .child(titlebar)
             .child(
@@ -881,5 +959,6 @@ impl Render for Workspace {
                 ),
             )
             .child(statusbar)
+            .children(palette)
     }
 }

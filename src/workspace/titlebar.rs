@@ -56,12 +56,19 @@ impl Workspace {
             .pl(px(16.))
             .pr(px(12.))
             .child(self.render_view_switch(&p, cx))
-            .child(icon_button("search", IconName::Search, &p).ml(px(8.)))
+            .child(
+                icon_button("search", IconName::Search, &p)
+                    .ml(px(8.))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx))),
+            )
             .child(
                 icon_button("appearance", appearance_icon, &p)
                     .on_click(|_, _, cx| theme::toggle(cx)),
             )
-            .child(self.render_export_button(&p));
+            .child(
+                self.render_export_button(&p)
+                    .on_click(cx.listener(|this, _, window, cx| this.export_html(window, cx))),
+            );
 
         TitleBar::new()
             .h(size::TITLEBAR)
@@ -198,7 +205,7 @@ impl Workspace {
             .child(item(ViewMode::Preview, "Preview", IconName::Eye))
     }
 
-    fn render_export_button(&self, p: &Palette) -> impl IntoElement + use<> {
+    fn render_export_button(&self, p: &Palette) -> Stateful<Div> {
         let hover = p.surface_hover;
         h_flex()
             .id("export")

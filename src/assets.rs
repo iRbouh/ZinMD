@@ -20,6 +20,7 @@ icon_assets!(
         FileText,
         Folder,
         FolderOpen,
+        Hash,
         Info,
         Link2,
         MessageSquareWarning,

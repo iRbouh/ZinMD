@@ -6,9 +6,9 @@
 //! what lets the editor and the preview scroll together.
 
 mod callout;
-mod frontmatter;
-mod math;
-mod mermaid;
+pub mod frontmatter;
+pub mod math;
+pub mod mermaid;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -40,7 +40,7 @@ pub fn extensions() -> MarkdownExtensions {
 }
 
 /// How the kit's parser is configured, given `extensions`.
-fn parse_options() -> markdown::ParseOptions {
+pub fn parse_options() -> markdown::ParseOptions {
     let mut options = markdown::ParseOptions::gfm();
     options.constructs.frontmatter = true;
     options.constructs.math_text = true;

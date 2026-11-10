@@ -107,6 +107,34 @@ impl Formula {
     }
 }
 
+/// A formula as HTML for export: the same outlines, sized in ems so they scale
+/// with the text and coloured like it. `None` if the formula cannot be laid out.
+pub fn html(source: &str, display: bool) -> Option<String> {
+    let laid = lay_out(source, display);
+    let formula = laid.as_ref().as_ref().ok()?;
+    let svg = String::from_utf8_lossy(&formula.svg);
+    // Our own size and colour replace the ones the outlines were drawn with.
+    let body = svg
+        .split_once('>')
+        .map(|(_, rest)| rest)?
+        .replace(['\n', '\r'], " ")
+        .replace("rgba(0,0,0,1)", "currentColor");
+    let view_box = format!(
+        "0 0 {} {}",
+        formula.width as f64 * UNITS_PER_EM,
+        (formula.height + formula.depth) as f64 * UNITS_PER_EM
+    );
+    let style = format!(
+        "width:{:.3}em;height:{:.3}em;vertical-align:{:.3}em",
+        formula.width,
+        formula.height + formula.depth,
+        -formula.depth
+    );
+    Some(format!(
+        r#"<svg class="math" xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}" style="{style}" fill="currentColor">{body}"#
+    ))
+}
+
 /// The source of a formula that failed, shown where the formula would be.
 fn broken(source: &str, cx: &App) -> Div {
     div()
