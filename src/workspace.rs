@@ -220,6 +220,8 @@ pub struct Workspace {
     _tree_refresh: Task<()>,
     /// The row of the file list that was last right-clicked: what its menu acts on.
     context_row: Option<PathBuf>,
+    /// The row a menu is open on, shown marked until the menu goes.
+    menu_row: Option<PathBuf>,
     /// The field for naming a new or renamed file, while one is being named.
     name_field: Option<fileops::NameField>,
     /// What the pointer is over, for hover that fades.
@@ -284,6 +286,7 @@ impl Workspace {
             _watching: Task::ready(()),
             _tree_refresh: Task::ready(()),
             context_row: None,
+            menu_row: None,
             name_field: None,
             hot: None,
             ghost_tabs: Vec::new(),
@@ -1004,27 +1007,42 @@ impl Workspace {
         let Some(root) = root else { return };
         let reveal = self.active_doc().and_then(|doc| doc.path.clone());
         cx.spawn(async move |this, cx| {
-            let (tree, index) = cx
+            let folder = root.clone();
+            let tree = cx
                 .background_executor()
                 .spawn(async move {
                     let mut tree = FileTree {
-                        rows: files::read_dir(&root, 0),
-                        root: Some(root),
+                        rows: files::read_dir(&folder, 0),
+                        root: Some(folder),
                     };
                     if let Some(path) = reveal {
                         tree.reveal(&path);
                     }
-                    let index = tree
-                        .root
-                        .as_deref()
-                        .map(|root| palette::index_files(root, 5000));
-                    (tree, index.unwrap_or_default())
+                    tree
                 })
                 .await;
-            this.update(cx, |this, cx| {
+            // The files show as soon as they are read. Listing every file
+            // below them, for the palette, can take longer and comes after.
+            let shown = this.update(cx, |this, cx| {
                 // Unless another folder was chosen while this one was being read.
-                if this.tree.root == tree.root {
+                let current = this.tree.root == tree.root;
+                if current {
                     this.tree = tree;
+                    this.place_draft();
+                    cx.notify();
+                }
+                current
+            });
+            if !shown.unwrap_or(false) {
+                return;
+            }
+            let folder = root.clone();
+            let index = cx
+                .background_executor()
+                .spawn(async move { palette::index_files(&folder, 5000) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.tree.root.as_deref() == Some(root.as_path()) {
                     this.file_index = index;
                     cx.notify();
                 }
@@ -1185,7 +1203,7 @@ impl Workspace {
             "find" => window.dispatch_action(Box::new(edit::Search), cx),
             // File actions on a row of the file list: `context:<n>` picks the row
             // as a right-click would, then `newfile`, `newfolder`, `rename`, `trash`
-            // act on it; `name:<text>` types a name and presses Return.
+            // act on it; `name:<text>` types a name, and `key:enter` confirms it.
             "context" => {
                 let row = argument
                     .parse()
@@ -1374,16 +1392,27 @@ impl Render for Workspace {
                     None => this.open_palette(window, cx),
                 }),
             )
-            .on_action(
-                cx.listener(|this, _: &NewFileHere, window, cx| this.new_file_here(window, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &NewFolderHere, window, cx| this.new_folder_here(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &RenameFile, window, cx| this.rename_here(window, cx)))
+            .on_action(cx.listener(|this, _: &NewFileHere, window, cx| {
+                this.context_row = None;
+                this.new_file_here(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NewFolderHere, window, cx| {
+                this.context_row = None;
+                this.new_folder_here(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &RenameFile, window, cx| {
+                this.context_row = None;
+                this.rename_here(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &TrashFile, window, cx| this.trash_here(window, cx)))
-            .on_action(cx.listener(|this, _: &RevealFile, _, cx| this.reveal_here(cx)))
-            .on_action(cx.listener(|this, _: &CopyFilePath, _, cx| this.copy_path_here(cx)))
+            .on_action(cx.listener(|this, _: &RevealFile, _, cx| {
+                this.context_row = None;
+                this.reveal_here(cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyFilePath, _, cx| {
+                this.context_row = None;
+                this.copy_path_here(cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &FindInFolder, window, cx| this.open_search(window, cx)),
             )

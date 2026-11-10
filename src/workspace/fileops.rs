@@ -1,16 +1,16 @@
 //! Managing files from the sidebar: new file, new folder, rename, move to the
 //! Trash, show in Finder. A right-click on a row offers them for that row;
-//! naming happens in a small field at the top of the file list.
+//! naming happens in the file list itself, in the row being named.
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, Sizable as _, h_flex};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 
+use super::sidebar::ROW_HEIGHT;
 use super::{Workspace, titlebar};
-use crate::theme::{Palette, size};
+use crate::files::Row;
+use crate::theme::size;
 use crate::ui;
 
 /// What the name being typed is for.
@@ -21,6 +21,17 @@ pub(super) enum Naming {
     NewFolder(PathBuf),
     /// A new name for this file or folder.
     Rename(PathBuf),
+}
+
+impl Naming {
+    /// Whether `row` is the one this name is typed in: the row being renamed,
+    /// or the blank row standing in for something new.
+    fn is_for(&self, row: &Row) -> bool {
+        match self {
+            Naming::Rename(path) => *path == row.path,
+            Naming::NewFile(_) | Naming::NewFolder(_) => row.name.is_empty(),
+        }
+    }
 }
 
 pub(super) struct NameField {
@@ -70,7 +81,7 @@ impl Workspace {
         self.ask_name(Naming::Rename(path), &name, window, cx);
     }
 
-    /// Show the name field, holding `current`, and put the caret in it.
+    /// Start naming: the row turns into a field holding `current`, with the caret in it.
     fn ask_name(
         &mut self,
         naming: Naming,
@@ -78,11 +89,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let placeholder = match naming {
-            Naming::NewFile(_) => "Name of the new file",
-            Naming::NewFolder(_) => "Name of the new folder",
+        let placeholder = match &naming {
+            Naming::NewFile(_) => "File name",
+            Naming::NewFolder(_) => "Folder name",
             Naming::Rename(_) => "New name",
         };
+        // The name is typed in the file list: the list, and the row, must be there to see.
+        self.sidebar_open = true;
+        if let Naming::Rename(path) = &naming {
+            if let Some(folder) = path.parent() {
+                self.tree.reveal(folder);
+            }
+        }
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(placeholder)
@@ -100,8 +118,8 @@ impl Workspace {
                 window,
                 |this, _, event: &InputEvent, window, cx| match event {
                     InputEvent::PressEnter { .. } => this.finish_naming(window, cx),
-                    // Clicking away leaves things as they were.
-                    InputEvent::Blur => this.cancel_naming(window, cx),
+                    // Moving on keeps what was typed, as Finder does. Escape is the way out.
+                    InputEvent::Blur => this.finish_naming(window, cx),
                     _ => {}
                 },
             );
@@ -110,11 +128,14 @@ impl Workspace {
             input,
             _events: events,
         });
+        self.place_draft();
+        self.show_naming_row();
         cx.notify();
     }
 
     pub(super) fn cancel_naming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.name_field.take().is_some() {
+            self.place_draft();
             if let Some(doc) = self.active_doc() {
                 doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
             }
@@ -122,7 +143,7 @@ impl Workspace {
         }
     }
 
-    /// Type a name into the field and press Return, for scripted runs.
+    /// Type a name into the field, for scripted runs. `key:enter` then confirms it.
     #[cfg(feature = "shot")]
     pub(super) fn debug_name(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = &self.name_field {
@@ -130,19 +151,22 @@ impl Workspace {
             field
                 .input
                 .update(cx, |input, cx| input.set_value(name, window, cx));
-            self.finish_naming(window, cx);
         }
     }
 
-    /// Carry out what the name was asked for.
-    fn finish_naming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Carry out what the name was asked for. An empty name asks for nothing.
+    pub(super) fn finish_naming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(field) = self.name_field.take() else {
             return;
         };
+        self.place_draft();
         let name = field.input.read(cx).value().trim().to_string();
         // A name is one path component; anything else is a slip, not a wish.
         if name.is_empty() || name.contains('/') || name == "." || name == ".." {
-            return self.cancel_naming(window, cx);
+            if let Some(doc) = self.active_doc() {
+                doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
+            }
+            return cx.notify();
         }
         let result = match &field.naming {
             Naming::NewFile(folder) => {
@@ -291,46 +315,76 @@ impl Workspace {
         }
     }
 
-    /// The field a name is typed into, shown at the top of the file list while one is wanted.
-    pub(super) fn render_name_field(
-        &self,
-        p: &Palette,
-        cx: &mut Context<Self>,
-    ) -> Option<impl IntoElement + use<>> {
+    /// The field for naming `row`, if it is the row being named.
+    pub(super) fn naming_input(&self, row: &Row) -> Option<Entity<InputState>> {
         let field = self.name_field.as_ref()?;
-        let icon = match field.naming {
-            Naming::NewFile(_) => IconName::FilePlus,
-            Naming::NewFolder(_) => IconName::FolderPlus,
-            Naming::Rename(_) => IconName::Pencil,
+        field.naming.is_for(row).then(|| field.input.clone())
+    }
+
+    /// Keep the file list in step with what is being named. Something new gets
+    /// a blank row at the top of the folder it will be created in, which is
+    /// opened if it was shut. Without anything being named, that row goes.
+    pub(super) fn place_draft(&mut self) {
+        // A real row always has a name: an empty one marks the draft.
+        self.tree.rows.retain(|row| !row.name.is_empty());
+        let Some(naming) = self.name_field.as_ref().map(|field| field.naming.clone()) else {
+            return;
         };
-        Some(
-            h_flex()
-                .flex_none()
-                .h(px(30.))
-                .mx(px(10.))
-                .mb(px(4.))
-                .pl(px(8.))
-                .gap(px(2.))
-                .rounded(size::RADIUS_SM)
-                .border_1()
-                .border_color(p.accent_border)
-                .bg(p.surface_raised)
-                // Escape gives up.
-                .on_action(
-                    cx.listener(|this, _: &gpui_kit::base::input::Escape, window, cx| {
-                        this.cancel_naming(window, cx)
-                    }),
-                )
-                .child(Icon::new(icon).size(px(14.)).text_color(p.accent_hover))
-                .child(
-                    div().flex_1().min_w_0().child(
-                        Input::new(&field.input)
-                            .appearance(false)
-                            .bordered(false)
-                            .small(),
-                    ),
-                ),
-        )
+        // No real file can have this name, so the draft is never mistaken for one.
+        let unnamed = |folder: &Path| folder.join("\0");
+        let (folder, path, is_dir) = match naming {
+            Naming::NewFile(folder) => (Some(folder.clone()), unnamed(&folder), false),
+            Naming::NewFolder(folder) => (Some(folder.clone()), unnamed(&folder), true),
+            Naming::Rename(path) => {
+                if self.tree.rows.iter().any(|row| row.path == path) {
+                    return;
+                }
+                // A file from outside the folder shown has no row: it borrows one.
+                let is_dir = path.is_dir();
+                (None, path, is_dir)
+            }
+        };
+        let under = folder.and_then(|folder| {
+            let mut rows = self.tree.rows.iter();
+            rows.position(|row| row.is_dir && row.path == folder)
+        });
+        let (at, depth) = match under {
+            Some(ix) => {
+                if !self.tree.rows[ix].open {
+                    self.tree.toggle(ix);
+                }
+                (ix + 1, self.tree.rows[ix].depth + 1)
+            }
+            // The folder the sidebar shows has no row of its own: its files start the list.
+            None => (0, 0),
+        };
+        let draft = Row {
+            path,
+            name: SharedString::default(),
+            is_dir,
+            depth,
+            open: false,
+        };
+        self.tree.rows.insert(at, draft);
+    }
+
+    /// Scroll the file list just enough to show the row being named.
+    fn show_naming_row(&mut self) {
+        let Some(naming) = self.name_field.as_ref().map(|field| &field.naming) else {
+            return;
+        };
+        let Some(ix) = self.tree.rows.iter().position(|row| naming.is_for(row)) else {
+            return;
+        };
+        let top = ROW_HEIGHT * ix as f32;
+        let view = self.tree_scroll.bounds().size.height;
+        let scrolled = -self.tree_scroll.offset().y;
+        if top < scrolled {
+            self.tree_scroll.set_offset(point(px(0.), -top));
+        } else if view > px(0.) && top + ROW_HEIGHT > scrolled + view {
+            self.tree_scroll
+                .set_offset(point(px(0.), -(top + ROW_HEIGHT - view)));
+        }
     }
 }
 

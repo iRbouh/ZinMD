@@ -12,26 +12,59 @@ use std::time::Instant;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::transition;
-use gpui_kit::component::menu::ContextMenuExt as _;
-use gpui_kit::component::{Icon, h_flex, v_flex};
+use gpui_kit::component::input::Input;
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::Workspace;
 use super::hover::Hot;
-use super::{
-    CopyFilePath, NewFileHere, NewFolderHere, RenameFile, RevealFile, TrashFile, Workspace,
-};
 use crate::files::Row;
 use crate::motion;
 use crate::theme::{ActivePalette as _, Palette, size};
 use crate::ui::{icon_button, section_label};
 
-const ROW_HEIGHT: Pixels = px(28.);
+pub(super) const ROW_HEIGHT: Pixels = px(28.);
 const OUTLINE_ROW_HEIGHT: Pixels = px(26.);
 /// Space on each side of the rows, so selection highlights float inside the sidebar.
 const GUTTER: Pixels = px(10.);
 
 /// A folder in the middle of opening or closing.
+/// Paints nothing: it listens for what closes a menu (a click, Escape, Return)
+/// and takes the mark off the row the menu was opened on.
+fn unmark_menu_row(cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
+    let workspace = cx.weak_entity();
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, _| {
+            let unmark = move |cx: &mut App| {
+                workspace
+                    .update(cx, |this, cx| {
+                        this.menu_row = None;
+                        cx.notify();
+                    })
+                    .ok();
+            };
+            let on_click = unmark.clone();
+            window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
+                // Before the click reaches a row, so a right-click on another row marks that one.
+                if phase == DispatchPhase::Capture {
+                    on_click(cx);
+                }
+            });
+            window.on_key_event(move |event: &KeyDownEvent, phase, _, cx| {
+                let closes = matches!(event.keystroke.key.as_str(), "escape" | "enter");
+                if phase == DispatchPhase::Capture && closes {
+                    unmark(cx);
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_0()
+}
+
 pub(super) struct TreeMotion {
     /// Row of the folder.
     at: usize,
@@ -99,7 +132,6 @@ impl Workspace {
                     .child(section_label("FILES", &p))
                     .child(new_file),
             )
-            .children(self.render_name_field(&p, cx))
             .child(files)
             .child(self.render_outline(&p, window, cx))
     }
@@ -294,7 +326,8 @@ impl Workspace {
                     .w_full()
                     .h(height)
                     .children(highlight)
-                    .children(rows),
+                    .children(rows)
+                    .children(self.menu_row.is_some().then(|| unmark_menu_row(cx))),
             )
             .into_any_element()
     }
@@ -367,6 +400,40 @@ impl Workspace {
             _ => IconName::FileText,
         };
 
+        // A row being named holds the field for its name, right where the name goes.
+        if let Some(input) = self.naming_input(row) {
+            let field = Input::new(&input)
+                .appearance(false)
+                .bordered(false)
+                .small()
+                .px_0()
+                .text_size(size::FONT_UI);
+            let item = h_flex()
+                .h(ROW_HEIGHT - px(1.))
+                // One less than a plain row, making up for the border.
+                .pl(px(5.) + px(16.) * row.depth as f32)
+                .pr(px(7.))
+                .gap(px(6.))
+                .rounded(size::RADIUS_SM)
+                .border_1()
+                .border_color(p.accent_border)
+                .bg(p.surface_raised)
+                // Escape gives up.
+                .on_action(
+                    cx.listener(|this, _: &gpui_kit::base::input::Escape, window, cx| {
+                        this.cancel_naming(window, cx)
+                    }),
+                )
+                // A click anywhere else is the end of naming, even where it moves no focus.
+                .on_mouse_down_out(
+                    cx.listener(|this, _, window, cx| this.finish_naming(window, cx)),
+                )
+                .child(chevron)
+                .child(Icon::new(icon).size(px(15.)).text_color(p.accent_hover))
+                .child(div().flex_1().min_w_0().child(field));
+            return div().h(ROW_HEIGHT).px(GUTTER).child(item);
+        }
+
         let item = h_flex()
             .id(("file", key as usize))
             .h(ROW_HEIGHT - px(1.))
@@ -382,10 +449,14 @@ impl Workspace {
                 p.text_secondary
             }))
             .child(div().flex_1().min_w_0().truncate().child(row.name.clone()))
-            .when_some(ix, |item, ix| {
-                item.on_click(
-                    cx.listener(move |this, _, window, cx| this.on_tree_click(ix, window, cx)),
-                )
+            .when(ix.is_some(), |item| {
+                // The row is found again by its path: rows may have come or gone since this was drawn.
+                let path = row.path.clone();
+                item.on_click(cx.listener(move |this, _, window, cx| {
+                    if let Some(ix) = this.tree.rows.iter().position(|row| row.path == path) {
+                        this.on_tree_click(ix, window, cx);
+                    }
+                }))
             });
         // The selected row already has its highlight; the others answer the pointer.
         let item = if selected {
@@ -393,23 +464,58 @@ impl Workspace {
         } else {
             self.hoverable(item, Hot::File(key), p.surface_hover, window, cx)
         };
-        // A right-click offers what can be done with this row.
+        // A right-click offers what can be done with this row, and marks the
+        // row so it is plain what the menu is about.
         let path = row.path.clone();
-        let item = item
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, _, _, _| this.context_row = Some(path.clone())),
-            )
-            .context_menu(|menu, _, _| {
-                menu.menu("New File", Box::new(NewFileHere))
-                    .menu("New Folder", Box::new(NewFolderHere))
-                    .separator()
-                    .menu("Rename…", Box::new(RenameFile))
-                    .menu("Move to Trash", Box::new(TrashFile))
-                    .separator()
-                    .menu("Show in Finder", Box::new(RevealFile))
-                    .menu("Copy Path", Box::new(CopyFilePath))
-            });
+        let item = item.on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, _, _, cx| {
+                this.menu_row = Some(path.clone());
+                cx.notify();
+            }),
+        );
+        let item = item.when(self.menu_row.as_ref() == Some(&row.path), |item| {
+            let ring = div()
+                .absolute()
+                .inset_0()
+                .rounded(size::RADIUS_SM)
+                .border_1()
+                .border_color(p.accent_border);
+            item.child(ring)
+        });
+        // Each choice carries the row it was offered for.
+        type Run = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
+        let (workspace, path) = (cx.weak_entity(), row.path.clone());
+        let item = item.context_menu(move |menu, _, _| {
+            let choice = |label: &'static str, run: Run| {
+                let (workspace, path) = (workspace.clone(), path.clone());
+                PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                    workspace
+                        .update(cx, |this, cx| {
+                            this.context_row = Some(path.clone());
+                            run(this, window, cx);
+                        })
+                        .ok();
+                })
+            };
+            menu.min_w(px(180.))
+                .item(choice("New File", |this, window, cx| {
+                    this.new_file_here(window, cx)
+                }))
+                .item(choice("New Folder", |this, window, cx| {
+                    this.new_folder_here(window, cx)
+                }))
+                .separator()
+                .item(choice("Rename…", |this, window, cx| {
+                    this.rename_here(window, cx)
+                }))
+                .item(choice("Move to Trash", |this, window, cx| {
+                    this.trash_here(window, cx)
+                }))
+                .separator()
+                .item(choice("Show in Finder", |this, _, cx| this.reveal_here(cx)))
+                .item(choice("Copy Path", |this, _, cx| this.copy_path_here(cx)))
+        });
         div().h(ROW_HEIGHT).px(GUTTER).child(item)
     }
 

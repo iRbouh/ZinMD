@@ -106,7 +106,12 @@ fn decode_data_url(link: &str) -> Option<Image> {
 pub fn style(p: &Palette) -> TextViewStyle {
     // Table rows sit on the page itself; only the header row is tinted.
     let table = StyleRefinement::default().bg(p.surface_preview);
+    let code = HighlightStyle {
+        background_color: Some(p.surface_hover),
+        ..Default::default()
+    };
     TextViewStyle::default()
+        .inline_code(code)
         .paragraph_gap(rems(1.))
         .table(table)
         .heading_font_size(|level, _| match level {

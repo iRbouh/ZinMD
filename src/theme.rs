@@ -114,6 +114,9 @@ palette! {
 
     border_subtle: c(STONE_200), c(STONE_850);
     border_strong: c(STONE_300), c(STONE_700);
+    // Lines drawn on a raised surface, such as the rules in a menu. In the
+    // dark appearance the subtle border is the raised surface's own colour.
+    border_raised: c(STONE_200), a(STONE_700, 0.7);
 
     text_primary: c(STONE_900), c(STONE_200);
     text_secondary: c(STONE_600), c(STONE_400);
@@ -362,7 +365,7 @@ fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig 
         "colors": {
             "background": hex(p.surface_preview),
             "foreground": hex(p.text_primary),
-            "border": hex(p.border_subtle),
+            "border": hex(p.border_raised),
             "input.border": hex(p.border_subtle),
             "ring": hex(p.accent_border),
             "caret": hex(p.accent),
@@ -374,7 +377,10 @@ fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig 
 
             "muted.background": hex(p.surface_sunken),
             "muted.foreground": hex(p.text_secondary),
-            "accent.background": hex(p.surface_hover),
+            // What the kit highlights the row under the pointer with, in menus and
+            // lists. Those sit on raised surfaces, where our plain hover colour
+            // is invisible in the dark appearance; the mustard tint shows on both.
+            "accent.background": hex(p.surface_selected),
             "accent.foreground": hex(p.text_primary),
             "primary.background": hex(p.accent),
             "primary.hover.background": hex(p.accent_hover),

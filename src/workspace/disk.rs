@@ -136,6 +136,8 @@ impl Workspace {
                 .await;
             let Ok(root) = this.update(cx, |this, cx| {
                 this.tree.refresh();
+                // Reading the folder again dropped the row a new name is being typed in.
+                this.place_draft();
                 cx.notify();
                 this.tree.root.clone()
             }) else {
