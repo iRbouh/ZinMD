@@ -1,0 +1,30 @@
+[package]
+name = "zwinmd"
+version = "0.1.0"
+edition = "2024"
+description = "A fast native Markdown editor and viewer"
+
+[dependencies]
+gpui-kit = { version = "0.9.1", features = ["tree-sitter", "tree-sitter-markdown", "tree-sitter-markdown-inline"] }
+serde_json = "1"
+
+# Only for the `shot` feature: lets the app save a picture of its own window.
+# Listed under other names so they never shadow `gpui_kit::*` in our code.
+gpui_shot = { package = "gpui-pre", version = "=0.3.12", optional = true, features = ["test-support"] }
+gpui_platform_shot = { package = "gpui-pre-platform", version = "=0.3.12", optional = true, features = ["test-support"] }
+
+[features]
+# Developer tool: `ZWINMD_SHOT=out.png` renders one frame to a PNG and quits.
+shot = ["dep:gpui_shot", "dep:gpui_platform_shot"]
+
+# Fast to build, used while developing.
+[profile.release]
+opt-level = 3
+
+# What we ship and what we measure startup with.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

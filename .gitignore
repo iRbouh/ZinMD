@@ -1,0 +1,4 @@
+target/
+.DS_Store
+# Reference copy of the VS Code extension (63 MB, not our code)
+ext/
