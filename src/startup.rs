@@ -25,6 +25,27 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// Start loading the graphics driver on another thread.
+///
+/// Creating the window needs the Metal device, and the first request for it in
+/// a process loads the GPU driver. Asking for it here lets that happen while
+/// the main thread is still setting the application up.
+pub fn warm_up_graphics() {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "Metal", kind = "framework")]
+        unsafe extern "C" {
+            fn MTLCreateSystemDefaultDevice() -> *mut std::ffi::c_void;
+        }
+        if std::env::var_os("ZWINMD_NO_WARMUP").is_none() {
+            // The device is deliberately kept: the renderer asks for the same one.
+            std::thread::spawn(|| {
+                unsafe { MTLCreateSystemDefaultDevice() };
+            });
+        }
+    }
+}
+
 /// Record that startup reached `stage`.
 pub fn mark(stage: &'static str) {
     if !enabled() {

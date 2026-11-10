@@ -43,7 +43,7 @@ actions!(
     ]
 );
 
-/// Register the app's keyboard shortcuts and menu bar. Call once at startup.
+/// Register the app's keyboard shortcuts. Call once at startup.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-n", NewFile, None),
@@ -63,7 +63,11 @@ pub fn init(cx: &mut App) {
     ]);
     // Reached only when no window is there to ask about unsaved changes.
     cx.on_action(|_: &Quit, cx| cx.quit());
+}
 
+/// Install the menu bar. Building it makes AppKit load extra frameworks (about
+/// 11 ms), so this is called once the first frame is on screen.
+pub fn install_menus(cx: &mut App) {
     cx.set_menus(vec![
         Menu::new("zwinMD").items([MenuItem::action("Quit zwinMD", Quit)]),
         Menu::new("File").items([
@@ -800,6 +804,7 @@ impl Workspace {
                 cx.quit();
                 return;
             }
+            install_menus(cx);
             this.update(cx, |this, cx| {
                 this.opened_ms = Some(ms);
                 cx.notify();

@@ -26,6 +26,7 @@ use crate::workspace::Workspace;
 
 fn main() {
     let started = startup::begin();
+    startup::warm_up_graphics();
     let path = std::env::args_os().nth(1).map(PathBuf::from);
 
     let app = gpui_kit::application().with_assets(assets::AppAssets);
@@ -47,6 +48,7 @@ fn main() {
         // Scripted runs stay in the background, away from the user's typing.
         #[cfg(not(feature = "shot"))]
         cx.activate(true);
+        startup::mark("app activated");
 
         #[cfg(not(feature = "shot"))]
         let window_size = size(px(1280.), px(820.));
