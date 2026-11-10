@@ -1,6 +1,7 @@
 //! The main window: open documents, the layout around them, and the commands
 //! that change either. Each strip of the window draws itself in a submodule.
 
+mod disk;
 mod hover;
 mod palette;
 mod panes;
@@ -161,6 +162,10 @@ pub struct Doc {
     /// Which source lines each preview row shows; rebuilt in the background after edits.
     blocks: BlockMap,
     sync: ScrollSync,
+    /// What its file looked like when we last read or wrote it, to tell when
+    /// someone else changes it; and anything the user should be told about it.
+    disk: Option<(std::time::SystemTime, u64)>,
+    notice: Option<disk::Notice>,
     /// How wide its tab is, and when the tab was opened if it should grow in.
     tab_width: Pixels,
     born: Option<Instant>,
@@ -185,6 +190,10 @@ pub struct Workspace {
     tree_scroll: ScrollHandle,
     /// A folder of the file list sliding open or shut.
     tree_motion: Option<sidebar::TreeMotion>,
+    /// Tells us when files change on disk; started after the first frame.
+    watcher: Option<crate::watch::Watcher>,
+    _watching: Task<()>,
+    _tree_refresh: Task<()>,
     /// What the pointer is over, for hover that fades.
     hot: Option<hover::Hot>,
     /// Closed tabs still shrinking out of the tab strip.
@@ -234,6 +243,9 @@ impl Workspace {
             tree: FileTree::default(),
             tree_scroll: ScrollHandle::new(),
             tree_motion: None,
+            watcher: None,
+            _watching: Task::ready(()),
+            _tree_refresh: Task::ready(()),
             hot: None,
             ghost_tabs: Vec::new(),
             switches: 0,
@@ -398,6 +410,10 @@ impl Workspace {
         });
         let id = self.next_doc_id;
         self.next_doc_id += 1;
+        let disk = path.as_deref().and_then(crate::watch::stamp);
+        if let (Some(watcher), Some(path)) = (&mut self.watcher, &path) {
+            watcher.include(path);
+        }
         let tab_width = titlebar::tab_width(ui::text_width(
             &name,
             size::FONT_UI,
@@ -416,6 +432,8 @@ impl Workspace {
             text,
             blocks: BlockMap::default(),
             sync: ScrollSync::default(),
+            disk,
+            notice: None,
             tab_width,
             // The tab the window opens with is simply there; later ones grow in.
             born: (!self.docs.is_empty()).then(Instant::now),
@@ -577,6 +595,12 @@ impl Workspace {
         match std::fs::write(path, doc.text.as_bytes()) {
             Ok(()) => {
                 doc.saved = doc.text.clone();
+                // Our own write must not look like someone else's change.
+                doc.disk = crate::watch::stamp(path);
+                doc.notice = None;
+                if let Some(watcher) = &mut self.watcher {
+                    watcher.include(path);
+                }
                 cx.notify();
                 true
             }
@@ -796,6 +820,9 @@ impl Workspace {
             rows: Vec::new(),
         };
         self.file_index.clear();
+        if let Some(watcher) = &mut self.watcher {
+            watcher.set_root(root.as_deref());
+        }
         cx.notify();
         let Some(root) = root else { return };
         let reveal = self.active_doc().and_then(|doc| doc.path.clone());
@@ -1028,7 +1055,7 @@ impl Workspace {
         startup::mark("first render");
         let started = self.started;
         let this = cx.weak_entity();
-        window.on_next_frame(move |_, cx| {
+        window.on_next_frame(move |window, cx| {
             let ms = started.elapsed().as_secs_f64() * 1000.;
             if startup::enabled() {
                 startup::mark("first frame on screen");
@@ -1039,6 +1066,7 @@ impl Workspace {
             install_menus(cx);
             this.update(cx, |this, cx| {
                 this.opened_ms = Some(ms);
+                this.start_watching(window, cx);
                 cx.notify();
             })
             .ok();

@@ -186,13 +186,25 @@ impl Workspace {
         let divider = (self.view == ViewMode::Split && (share - self.split).abs() < 0.001)
             .then(|| motion::resize_handle("split-handle", editor_width, DragSplit, &p));
 
+        let notice = doc
+            .notice
+            .map(|notice| self.render_notice(doc.id, notice, &p, cx));
         div()
-            .relative()
             .flex()
+            .flex_col()
             .size_full()
-            .children(editor)
-            .children(preview)
-            .children(divider)
+            .children(notice)
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .children(editor)
+                    .children(preview)
+                    .children(divider),
+            )
             .into_any_element()
     }
 

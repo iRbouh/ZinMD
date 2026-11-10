@@ -135,7 +135,7 @@ pub fn read_dir(dir: &Path, depth: usize) -> Vec<Row> {
 }
 
 /// Build folders that are never worth walking into.
-const IGNORED_DIRS: &[&str] = &[
+pub const IGNORED_DIRS: &[&str] = &[
     "node_modules",
     "target",
     "dist",

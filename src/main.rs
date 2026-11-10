@@ -19,6 +19,7 @@ mod startup;
 mod sync;
 mod theme;
 mod ui;
+mod watch;
 mod workspace;
 
 use std::path::PathBuf;

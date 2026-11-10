@@ -10083,6 +10083,7 @@ dependencies = [
  "gpui-pre-platform",
  "markdown",
  "merman",
+ "notify",
  "ratex-layout",
  "ratex-parser",
  "ratex-svg",
