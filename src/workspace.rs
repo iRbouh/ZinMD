@@ -1,6 +1,7 @@
 //! The main window: open documents, the layout around them, and the commands
 //! that change either. Each strip of the window draws itself in a submodule.
 
+mod backup;
 mod disk;
 mod fileops;
 mod hover;
@@ -180,6 +181,9 @@ pub struct Doc {
     /// someone else changes it; and anything the user should be told about it.
     disk: Option<(std::time::SystemTime, u64)>,
     notice: Option<disk::Notice>,
+    /// Names the file its unsaved edits are backed up to, and the pending write.
+    backup_key: String,
+    _backup: Task<()>,
     /// How wide its tab is, and when the tab was opened if it should grow in.
     tab_width: Pixels,
     born: Option<Instant>,
@@ -347,6 +351,7 @@ impl Workspace {
                     if confirmed.await {
                         this.update_in(cx, |this, window, _| {
                             this.close_confirmed = true;
+                            this.drop_backups();
                             window.remove_window();
                         })
                         .ok();
@@ -502,6 +507,12 @@ impl Workspace {
             sync: ScrollSync::default(),
             disk,
             notice: None,
+            // Unique among everything this app has ever backed up: start time and a counter.
+            backup_key: format!(
+                "{}-{id}",
+                self.started.elapsed().as_nanos() ^ std::process::id() as u128
+            ),
+            _backup: Task::ready(()),
             tab_width,
             born,
             _changes: changes,
@@ -618,6 +629,7 @@ impl Workspace {
         doc.preview
             .update(cx, |preview, cx| preview.set_text(&text, cx));
         doc.text = text;
+        self.back_up(ix, cx);
         // Wait for a pause in typing: the map is only needed to scroll.
         self.map_blocks(ix, Duration::from_millis(80), cx);
         cx.notify();
@@ -763,6 +775,7 @@ impl Workspace {
                 if let Some(watcher) = &mut self.watcher {
                     watcher.include(path);
                 }
+                self.back_up(ix, cx);
                 cx.notify();
                 true
             }
@@ -820,6 +833,7 @@ impl Workspace {
     fn close_doc(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.doc_ix(id) else { return };
         let closed = self.docs.remove(ix);
+        Self::drop_backup(&closed.backup_key);
         // Ghosts are placed by where they were among the open tabs; keep that true.
         for ghost in &mut self.ghost_tabs {
             if ghost.at > ix {
@@ -903,8 +917,9 @@ impl Workspace {
 
     fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let confirmed = self.confirm_closing_all(window, cx);
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             if confirmed.await {
+                this.update(cx, |this, _| this.drop_backups()).ok();
                 cx.update(|cx| cx.quit());
             }
         })
@@ -1259,6 +1274,7 @@ impl Workspace {
             this.update(cx, |this, cx| {
                 this.opened_ms = Some(ms);
                 this.restore_tabs(window, cx);
+                this.restore_backups(window, cx);
                 this.start_watching(window, cx);
                 cx.notify();
             })
