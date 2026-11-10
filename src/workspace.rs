@@ -2,6 +2,7 @@
 //! that change either. Each strip of the window draws itself in a submodule.
 
 mod disk;
+mod fileops;
 mod hover;
 mod palette;
 mod panes;
@@ -50,6 +51,12 @@ actions!(
         OpenPalette,
         FindInFolder,
         ExportHtml,
+        NewFileHere,
+        NewFolderHere,
+        RenameFile,
+        TrashFile,
+        RevealFile,
+        CopyFilePath,
         FontBigger,
         FontSmaller,
         FontReset,
@@ -102,6 +109,9 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Save", Save),
             MenuItem::action("Save As…", SaveAs),
             MenuItem::action("Export as HTML…", ExportHtml),
+            MenuItem::separator(),
+            MenuItem::action("Rename…", RenameFile),
+            MenuItem::action("Show in Finder", RevealFile),
             MenuItem::separator(),
             MenuItem::action("Close Tab", CloseTab),
         ]),
@@ -204,6 +214,10 @@ pub struct Workspace {
     watcher: Option<crate::watch::Watcher>,
     _watching: Task<()>,
     _tree_refresh: Task<()>,
+    /// The row of the file list that was last right-clicked: what its menu acts on.
+    context_row: Option<PathBuf>,
+    /// The field for naming a new or renamed file, while one is being named.
+    name_field: Option<fileops::NameField>,
     /// What the pointer is over, for hover that fades.
     hot: Option<hover::Hot>,
     /// Closed tabs still shrinking out of the tab strip.
@@ -265,6 +279,8 @@ impl Workspace {
             watcher: None,
             _watching: Task::ready(()),
             _tree_refresh: Task::ready(()),
+            context_row: None,
+            name_field: None,
             hot: None,
             ghost_tabs: Vec::new(),
             switches: 0,
@@ -1152,6 +1168,21 @@ impl Workspace {
                 None => self.open_palette(window, cx),
             },
             "find" => window.dispatch_action(Box::new(edit::Search), cx),
+            // File actions on a row of the file list: `context:<n>` picks the row
+            // as a right-click would, then `newfile`, `newfolder`, `rename`, `trash`
+            // act on it; `name:<text>` types a name and presses Return.
+            "context" => {
+                let row = argument
+                    .parse()
+                    .ok()
+                    .and_then(|ix: usize| self.tree.rows.get(ix));
+                self.context_row = row.map(|row| row.path.clone());
+            }
+            "newfile" => self.new_file_here(window, cx),
+            "newfolder" => self.new_folder_here(window, cx),
+            "rename" => self.rename_here(window, cx),
+            "trash" => self.trash_here(window, cx),
+            "name" => self.debug_name(argument, window, cx),
             "search" => self.open_search(window, cx),
             // Type into the palette, whichever kind is open.
             "query" => {
@@ -1327,6 +1358,16 @@ impl Render for Workspace {
                     None => this.open_palette(window, cx),
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &NewFileHere, window, cx| this.new_file_here(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NewFolderHere, window, cx| this.new_folder_here(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &RenameFile, window, cx| this.rename_here(window, cx)))
+            .on_action(cx.listener(|this, _: &TrashFile, window, cx| this.trash_here(window, cx)))
+            .on_action(cx.listener(|this, _: &RevealFile, _, cx| this.reveal_here(cx)))
+            .on_action(cx.listener(|this, _: &CopyFilePath, _, cx| this.copy_path_here(cx)))
             .on_action(
                 cx.listener(|this, _: &FindInFolder, window, cx| this.open_search(window, cx)),
             )

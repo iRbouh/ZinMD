@@ -12,12 +12,15 @@ use std::time::Instant;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::transition;
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::Workspace;
 use super::hover::Hot;
+use super::{
+    CopyFilePath, NewFileHere, NewFolderHere, RenameFile, RevealFile, TrashFile, Workspace,
+};
 use crate::files::Row;
 use crate::motion;
 use crate::theme::{ActivePalette as _, Palette, size};
@@ -76,7 +79,11 @@ impl Workspace {
                 cx,
             )
             .size(px(22.))
-            .on_click(cx.listener(|this, _, window, cx| this.open_untitled(window, cx)));
+            .on_click(cx.listener(|this, _, window, cx| {
+                // The plus makes a file in the folder on show, not under some earlier right-click.
+                this.context_row = None;
+                this.new_file_here(window, cx);
+            }));
 
         v_flex()
             .size_full()
@@ -92,6 +99,7 @@ impl Workspace {
                     .child(section_label("FILES", &p))
                     .child(new_file),
             )
+            .children(self.render_name_field(&p, cx))
             .child(files)
             .child(self.render_outline(&p, window, cx))
     }
@@ -385,6 +393,23 @@ impl Workspace {
         } else {
             self.hoverable(item, Hot::File(key), p.surface_hover, window, cx)
         };
+        // A right-click offers what can be done with this row.
+        let path = row.path.clone();
+        let item = item
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, _, _| this.context_row = Some(path.clone())),
+            )
+            .context_menu(|menu, _, _| {
+                menu.menu("New File", Box::new(NewFileHere))
+                    .menu("New Folder", Box::new(NewFolderHere))
+                    .separator()
+                    .menu("Rename…", Box::new(RenameFile))
+                    .menu("Move to Trash", Box::new(TrashFile))
+                    .separator()
+                    .menu("Show in Finder", Box::new(RevealFile))
+                    .menu("Copy Path", Box::new(CopyFilePath))
+            });
         div().h(ROW_HEIGHT).px(GUTTER).child(item)
     }
 
