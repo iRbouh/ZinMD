@@ -5,29 +5,110 @@
 //! `BlockMap` records which source lines each of those rows came from; that is
 //! what lets the editor and the preview scroll together.
 
+mod callout;
+mod frontmatter;
+mod math;
+mod mermaid;
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, LazyLock, Mutex};
+
 use gpui_kit::component::text::{MarkdownExtensions, TextViewStyle};
 use gpui_kit::*;
 
-use crate::theme::size;
+use crate::theme::{Palette, size};
 
-/// Markdown syntax beyond the core that the preview understands.
-/// `parse_options` must describe the same syntax, or rows and lines drift apart.
+/// Markdown syntax beyond the core that the preview understands: front matter,
+/// callouts, math and diagrams. `parse_options` must describe the same syntax,
+/// or rows and lines drift apart.
+///
+/// Built once and shared: the kit parses a document again whenever it is handed
+/// a registry it has not seen before.
 pub fn extensions() -> MarkdownExtensions {
-    MarkdownExtensions::default()
+    static EXTENSIONS: LazyLock<MarkdownExtensions> = LazyLock::new(|| {
+        callout::register(
+            MarkdownExtensions::default()
+                .frontmatter()
+                .plugin(frontmatter::FrontMatter)
+                .plugin(math::InlineMath)
+                .plugin(math::BlockMath)
+                .plugin(mermaid::Mermaid),
+        )
+    });
+    EXTENSIONS.clone()
 }
 
 /// How the kit's parser is configured, given `extensions`.
 fn parse_options() -> markdown::ParseOptions {
     let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
     options.constructs.math_text = true;
     options.constructs.math_flow = true;
     options
 }
 
+/// Where the picture behind an image link comes from.
+///
+/// Paths are read from disk, relative to the folder of the document. Pictures
+/// embedded as `data:` links are decoded once and remembered. Anything else is
+/// left to the kit to fetch.
+pub fn image_source(uri: &SharedUri, folder: Option<&Path>) -> ImageSource {
+    static EMBEDDED: LazyLock<Mutex<HashMap<SharedUri, Option<Arc<Image>>>>> =
+        LazyLock::new(Default::default);
+
+    let link: &str = uri.as_ref();
+    if link.starts_with("data:") {
+        let mut embedded = EMBEDDED.lock().unwrap();
+        if embedded.len() >= 64 && !embedded.contains_key(uri) {
+            embedded.clear();
+        }
+        let image = embedded
+            .entry(uri.clone())
+            .or_insert_with(|| decode_data_url(link).map(Arc::new));
+        return match image {
+            Some(image) => ImageSource::Image(image.clone()),
+            None => ImageSource::Resource(Resource::Uri(uri.clone())),
+        };
+    }
+    let is_remote = link
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme != "file");
+    if is_remote {
+        return ImageSource::Resource(Resource::Uri(uri.clone()));
+    }
+
+    let path = Path::new(link.strip_prefix("file://").unwrap_or(link));
+    let path = match (path.is_absolute(), folder) {
+        (false, Some(folder)) => folder.join(path),
+        _ => path.to_path_buf(),
+    };
+    ImageSource::Resource(Resource::Path(path.into()))
+}
+
+fn decode_data_url(link: &str) -> Option<Image> {
+    let url = data_url::DataUrl::process(link).ok()?;
+    let format = match url.mime_type().subtype.as_str() {
+        "png" => ImageFormat::Png,
+        "jpeg" | "jpg" => ImageFormat::Jpeg,
+        "gif" => ImageFormat::Gif,
+        "webp" => ImageFormat::Webp,
+        "svg+xml" => ImageFormat::Svg,
+        "bmp" => ImageFormat::Bmp,
+        "tiff" => ImageFormat::Tiff,
+        _ => return None,
+    };
+    let (bytes, _) = url.decode_to_vec().ok()?;
+    Some(Image::from_bytes(format, bytes))
+}
+
 /// Type sizes and spacing of rendered Markdown.
-pub fn style() -> TextViewStyle {
+pub fn style(p: &Palette) -> TextViewStyle {
+    // Table rows sit on the page itself; only the header row is tinted.
+    let table = StyleRefinement::default().bg(p.surface_preview);
     TextViewStyle::default()
         .paragraph_gap(rems(1.))
+        .table(table)
         .heading_font_size(|level, _| match level {
             1 => size::FONT_H1,
             2 => size::FONT_H2,

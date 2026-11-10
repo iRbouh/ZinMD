@@ -44,6 +44,8 @@ fn main() {
             }
         })
         .detach();
+        // Scripted runs stay in the background, away from the user's typing.
+        #[cfg(not(feature = "shot"))]
         cx.activate(true);
 
         #[cfg(not(feature = "shot"))]
@@ -66,6 +68,7 @@ fn main() {
             }),
             // Our title bar moves the window itself, so clicks on it are never delayed.
             app_owns_titlebar_drag: true,
+            focus: cfg!(not(feature = "shot")),
             ..Default::default()
         };
         let (_window, _workspace) = gpui_kit::open_window(options, cx, |window, cx| {

@@ -5,10 +5,20 @@ edition = "2024"
 description = "A fast native Markdown editor and viewer"
 
 [dependencies]
-gpui-kit = { version = "0.9.1", features = ["tree-sitter", "tree-sitter-markdown", "tree-sitter-markdown-inline"] }
+# `tree-sitter-languages` turns on syntax highlighting for every language the kit knows.
+gpui-kit = { version = "0.9.1", features = ["tree-sitter-languages"] }
+# Mermaid diagrams, laid out and drawn natively.
+merman = { version = "0.9.3", features = ["png", "native-fonts"] }
+# LaTeX math, laid out natively and drawn as vector outlines.
+ratex-layout = "0.1.15"
+ratex-parser = "0.1.15"
+ratex-svg = { version = "0.1.15", features = ["embed-fonts"] }
+ratex-types = "0.1.15"
 serde_json = "1"
 # The parser the component kit uses, to map preview blocks back to source lines.
 markdown = "1.0.0"
+# Decodes images embedded in a document as `data:` links.
+data-url = "0.3"
 
 # Only for the `shot` feature: lets the app save a picture of its own window.
 # Listed under other names so they never shadow `gpui_kit::*` in our code.
@@ -28,5 +38,4 @@ opt-level = 3
 inherits = "release"
 lto = "fat"
 codegen-units = 1
-panic = "abort"
 strip = true

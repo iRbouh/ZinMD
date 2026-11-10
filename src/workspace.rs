@@ -1,6 +1,7 @@
 //! The main window: open documents, the layout around them, and the commands
 //! that change either. Each strip of the window draws itself in a submodule.
 
+mod panes;
 mod sidebar;
 mod statusbar;
 mod titlebar;
@@ -9,19 +10,18 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::input as edit;
-use gpui_kit::component::input::{Editor, EditorState, InputEvent, Position};
+use gpui_kit::component::input::{EditorState, InputEvent, Position};
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
-use gpui_kit::component::text::{TextView, TextViewState};
+use gpui_kit::component::text::TextViewState;
 use gpui_kit::component::v_flex;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::doc::{self, Heading, Stats};
 use crate::files::{self, FileTree};
-use crate::preview::{self, BlockMap};
+use crate::preview::BlockMap;
 use crate::startup;
 use crate::sync::{ScrollSync, Side};
-use crate::theme::{self, ActivePalette as _, Palette, size};
+use crate::theme::{self, ActivePalette as _, size};
 
 actions!(
     zwinmd,
@@ -704,7 +704,8 @@ impl Workspace {
     /// One step of a `ZWINMD_SCRIPT`, standing in for the user in scripted checks:
     /// `editor:<px>` and `preview:<px>` scroll a pane, `type:<text>` types at the
     /// caret, `line:<n>` moves the caret, `view:editor|split|preview`, `sidebar`,
-    /// `sync`, `new`, `open:<path>`, `save` and `close` run those commands.
+    /// `sync`, `new`, `open:<path>`, `save` and `close` run those commands,
+    /// `link:<url>` follows a link and `check:<n>` clicks the n-th task checkbox.
     #[cfg(feature = "shot")]
     pub fn debug_step(&mut self, step: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (command, argument) = step.split_once(':').unwrap_or((step, ""));
@@ -761,81 +762,26 @@ impl Workspace {
             "open" => self.open(PathBuf::from(argument), window, cx),
             "save" => self.save_doc(id, false, window, cx).detach(),
             "close" => self.request_close(self.active, window, cx),
+            "link" => self.follow_link(argument, window, cx),
+            "check" => {
+                // Click the n-th task checkbox, as the preview would report it.
+                let text = self.docs[self.active].text.clone();
+                let nth = argument.parse().unwrap_or(0);
+                let marker = text
+                    .match_indices("[")
+                    .filter(|(at, _)| matches!(text.get(*at..*at + 3), Some("[ ]" | "[x]")))
+                    .nth(nth);
+                if let Some((at, _)) = marker {
+                    let checked = &text[at..at + 3] == "[ ]";
+                    self.toggle_task(id, at..at + 3, checked, window, cx);
+                }
+            }
             other => eprintln!("unknown script step: {other}"),
         }
         cx.notify();
     }
 
     // ---------------------------------------------------------------- panes
-
-    /// Keep the two panes on the same part of the document.
-    fn sync_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.sync_enabled || self.view != ViewMode::Split {
-            return;
-        }
-        let Some(doc) = self.docs.get_mut(self.active) else {
-            return;
-        };
-        if doc.sync.update(&doc.editor, &doc.preview, &doc.blocks, cx) {
-            window.request_animation_frame();
-        }
-    }
-
-    /// How wide the preview pane is, to centre its text column.
-    fn preview_width(&self, window: &Window, cx: &App) -> Pixels {
-        let sidebar = match self.sidebar_open {
-            true => self
-                .sidebar_split
-                .read(cx)
-                .sizes()
-                .first()
-                .copied()
-                .unwrap_or(size::SIDEBAR),
-            false => px(0.),
-        };
-        let area = window.viewport_size().width - sidebar;
-        match self.view {
-            ViewMode::Split => self
-                .pane_split
-                .read(cx)
-                .sizes()
-                .get(1)
-                .copied()
-                .unwrap_or(area / 2.),
-            _ => area,
-        }
-    }
-
-    fn render_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let p = *cx.palette();
-        let Some(doc) = self.active_doc() else {
-            return div().into_any_element();
-        };
-
-        let editor = div().size_full().bg(p.surface_editor).child(
-            Editor::new(&doc.editor)
-                .appearance(false)
-                .bordered(false)
-                .h_full(),
-        );
-        let preview = render_preview(doc, self.preview_width(window, cx), &p, cx);
-
-        h_resizable("panes")
-            .with_state(&self.pane_split)
-            .child(
-                resizable_panel()
-                    .visible(self.view != ViewMode::Preview)
-                    .size_range(px(240.)..Pixels::MAX)
-                    .child(editor),
-            )
-            .child(
-                resizable_panel()
-                    .visible(self.view != ViewMode::Editor)
-                    .size_range(px(240.)..Pixels::MAX)
-                    .child(preview),
-            )
-            .into_any_element()
-    }
 
     /// Record how long it took from process start to the first frame on screen.
     fn time_first_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -861,62 +807,6 @@ impl Workspace {
             .ok();
         });
     }
-}
-
-/// Widest the text column of the preview gets, for comfortable line lengths.
-const PREVIEW_COLUMN: Pixels = px(760.);
-/// Clear space above the preview text.
-const PREVIEW_TOP: Pixels = px(28.);
-
-fn render_preview(doc: &Doc, width: Pixels, p: &Palette, cx: &App) -> impl IntoElement + use<> {
-    let list = doc.preview.read(cx).list_state().clone();
-    let margin = ((width - PREVIEW_COLUMN) / 2.).max(px(40.));
-    let top = list.logical_scroll_top();
-    let scrolled = top.item_ix > 0 || top.offset_in_item > px(0.);
-    let clear = p.surface_preview.opacity(0.);
-
-    div()
-        .id(("preview", doc.id))
-        .relative()
-        .size_full()
-        .bg(p.surface_preview)
-        // The margins beside the text column scroll the document too.
-        .on_scroll({
-            let list = list.clone();
-            move |event, window, _| {
-                if !list.viewport_bounds().contains(&event.position) {
-                    list.scroll_by(-event.delta.pixel_delta(px(20.)).y);
-                    window.refresh();
-                }
-            }
-        })
-        .child(
-            TextView::new(&doc.preview)
-                .scrollable(true)
-                .selectable(true)
-                .style(preview::style())
-                .markdown_extensions(preview::extensions())
-                .text_size(size::FONT_BODY)
-                .line_height(relative(1.65))
-                .px(margin)
-                .pt(PREVIEW_TOP),
-        )
-        // Text scrolling out at the top fades away instead of being cut off.
-        .when(scrolled, |pane| {
-            pane.child(
-                div()
-                    .absolute()
-                    .top(PREVIEW_TOP)
-                    .left_0()
-                    .right(px(12.))
-                    .h(px(20.))
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(p.surface_preview, 0.),
-                        linear_color_stop(clear, 1.),
-                    )),
-            )
-        })
 }
 
 impl Render for Workspace {

@@ -100,6 +100,21 @@ pub fn outline(text: &str) -> Vec<Heading> {
     headings
 }
 
+/// The anchor a heading is linked to with `[text](#anchor)`, as GitHub derives
+/// it: lower case, punctuation dropped, spaces turned into hyphens.
+pub fn anchor(title: &str) -> String {
+    title
+        .trim()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            '-' | '_' => Some(c),
+            c if c.is_alphanumeric() => Some(c.to_lowercase().next().unwrap_or(c)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Size of a document, for the status bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stats {
@@ -159,6 +174,13 @@ mod tests {
     fn finds_setext_headings() {
         let text = "Title\n=====\n\nSub\n---\n\n- item\n---\n";
         assert_eq!(titles(text), [(1, "Title".into(), 0), (2, "Sub".into(), 3)]);
+    }
+
+    #[test]
+    fn derives_anchors() {
+        assert_eq!(anchor("Render pipeline"), "render-pipeline");
+        assert_eq!(anchor("  What's new in v2.0?  "), "whats-new-in-v20");
+        assert_eq!(anchor("snake_case & kebab-case"), "snake_case--kebab-case");
     }
 
     #[test]
