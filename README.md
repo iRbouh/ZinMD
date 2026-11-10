@@ -1,6 +1,10 @@
-# ZwinMD
+<p align="center">
+  <img src="design/logo/png/app-icon-256.png" width="128" height="128" alt="ZwinMD icon: a zellij rosette, mustard on black">
+</p>
 
-A fast, native Markdown editor and viewer for macOS.
+<h1 align="center">ZwinMD</h1>
+
+<p align="center">A fast, native Markdown editor and viewer for macOS.</p>
 
 There is no browser inside. It is written in Rust on GPUI and draws
 everything itself, so it opens in about 0.1 to 0.15 seconds on an Apple M4 Pro.
@@ -55,6 +59,9 @@ Early. The app is not signed or notarized yet, and PDF export is not built.
 Inspired by [Markdown Preview Enhanced](https://github.com/shd101wyy/vscode-markdown-preview-enhanced).
 Built with [gpui-kit](https://crates.io/crates/gpui-kit),
 [merman](https://crates.io/crates/merman) for diagrams and RaTeX for math.
+
+The icon is a zellij rosette, the eight-point star and its petals from
+Moroccan tile work. The drawings are in [`design/logo`](design/logo).
 
 JetBrains Mono and Fira Code ship with the app under the SIL Open Font
 License 1.1; their licence files are in `assets/fonts`.

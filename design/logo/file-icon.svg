@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- The icon a Markdown file wears when ZwinMD is its app: a page, the mark, and MD.
+       The letters are shapes, so no font is needed. -->
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F6F3EC"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F3EFE4"/>
+      <stop offset="1" stop-color="#DFD9C9"/>
+    </linearGradient>
+  </defs>
+  <path d="M254 84 H632 L828 280 V866 Q828 924 770 924 H254 Q196 924 196 866 V142 Q196 84 254 84 Z" transform="translate(0 16)" fill="#000" fill-opacity="0.035" stroke="#000" stroke-opacity="0.035" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M254 84 H632 L828 280 V866 Q828 924 770 924 H254 Q196 924 196 866 V142 Q196 84 254 84 Z" transform="translate(0 16)" fill="#000" fill-opacity="0.035" stroke="#000" stroke-opacity="0.035" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M254 84 H632 L828 280 V866 Q828 924 770 924 H254 Q196 924 196 866 V142 Q196 84 254 84 Z" transform="translate(0 16)" fill="#000" fill-opacity="0.035" stroke="#000" stroke-opacity="0.035" stroke-width="34" stroke-linejoin="round"/>
+  <path d="M254 84 H632 L828 280 V866 Q828 924 770 924 H254 Q196 924 196 866 V142 Q196 84 254 84 Z" transform="translate(0 16)" fill="#000" fill-opacity="0.035" stroke="#000" stroke-opacity="0.035" stroke-width="52" stroke-linejoin="round"/>
+  <path d="M254 84 H632 L828 280 V866 Q828 924 770 924 H254 Q196 924 196 866 V142 Q196 84 254 84 Z" fill="url(#paper)" stroke="#D5CFC0" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M632 84 L828 280 H666 Q632 280 632 246 Z" transform="translate(-6 8)" fill="#000" fill-opacity="0.06"/>
+  <path d="M632 84 L828 280 H666 Q632 280 632 246 Z" fill="url(#fold)" stroke="#D5CFC0" stroke-width="4" stroke-linejoin="round"/>
+  <path fill="#E1AD01" d="M512 418.48 L544.87 385.62 L544.87 358.38 L512 325.52 L479.13 358.38 L479.13 385.62 Z M569.52 476 L602.38 508.87 L629.62 508.87 L662.48 476 L629.62 443.13 L602.38 443.13 Z M512 533.52 L479.13 566.38 L479.13 593.62 L512 626.48 L544.87 593.62 L544.87 566.38 Z M454.48 476 L421.62 443.13 L394.38 443.13 L361.52 476 L394.38 508.87 L421.62 508.87 Z"/>
+  <path fill="#EBC034" d="M552.67 435.33 L599.15 435.33 L618.41 416.08 L618.41 369.59 L571.92 369.59 L552.67 388.85 Z M552.67 516.67 L552.67 563.15 L571.92 582.41 L618.41 582.41 L618.41 535.92 L599.15 516.67 Z M471.33 516.67 L424.85 516.67 L405.59 535.92 L405.59 582.41 L452.08 582.41 L471.33 563.15 Z M471.33 435.33 L471.33 388.85 L452.08 369.59 L405.59 369.59 L405.59 416.08 L424.85 435.33 Z"/>
+  <path fill="#1E1D1A" d="M512 430.24 L525.4 443.64 L544.36 443.64 L544.36 462.6 L557.76 476 L544.36 489.4 L544.36 508.36 L525.4 508.36 L512 521.76 L498.6 508.36 L479.64 508.36 L479.64 489.4 L466.24 476 L479.64 462.6 L479.64 443.64 L498.6 443.64 Z"/>
+  <path transform="translate(403.84 736) scale(1.04)" fill-rule="evenodd" fill="#8A6500" d="M0 92 V0 H24 L52 50 L80 0 H104 V92 H82 V34 L60 74 H44 L22 34 V92 Z M120 0 H160 C190 0 208 20 208 46 C208 72 190 92 160 92 H120 Z M142 20 V72 H160 C176 72 185 61 185 46 C185 31 176 20 160 20 Z"/>
+</svg>

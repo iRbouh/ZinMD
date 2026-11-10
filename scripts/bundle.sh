@@ -16,6 +16,8 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "target/$profile/zwinmd" "$app/Contents/MacOS/ZwinMD"
 cp assets/ZwinMD.icns "$app/Contents/Resources/ZwinMD.icns"
+# The icon Markdown files wear in Finder when ZwinMD is the app that opens them.
+cp assets/ZwinMD-document.icns "$app/Contents/Resources/ZwinMD-document.icns"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -38,6 +40,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
         <dict>
             <key>CFBundleTypeName</key><string>Markdown document</string>
             <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>CFBundleTypeIconFile</key><string>ZwinMD-document</string>
             <key>LSHandlerRank</key><string>Alternate</string>
             <key>LSItemContentTypes</key>
             <array><string>net.daringfireball.markdown</string><string>public.plain-text</string></array>

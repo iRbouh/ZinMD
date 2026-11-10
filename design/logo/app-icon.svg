@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- ZwinMD app icon, on the macOS icon grid: an 824 point tile centred in a 1024 point canvas.
+       No filters, so every renderer draws it the same; the soft shadow is a stack of faint tiles. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C2A26"/>
+      <stop offset="1" stop-color="#171614"/>
+    </linearGradient>
+  </defs>
+  <rect x="106" y="124" width="812" height="812" rx="180" fill="#000" fill-opacity="0.04"/>
+  <rect x="100" y="118" width="824" height="824" rx="186" fill="#000" fill-opacity="0.04"/>
+  <rect x="93" y="111" width="838" height="838" rx="193" fill="#000" fill-opacity="0.04"/>
+  <rect x="85" y="103" width="854" height="854" rx="201" fill="#000" fill-opacity="0.04"/>
+  <rect x="76" y="94" width="872" height="872" rx="210" fill="#000" fill-opacity="0.04"/>
+  <rect x="66" y="84" width="892" height="892" rx="220" fill="#000" fill-opacity="0.04"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  <rect x="102" y="102" width="820" height="820" rx="184" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="4"/>
+  <path fill="#E1AD01" d="M512 393.28 L579.85 325.44 L579.85 269.23 L512 201.38 L444.15 269.23 L444.15 325.44 Z M630.72 512 L698.56 579.85 L754.77 579.85 L822.62 512 L754.77 444.15 L698.56 444.15 Z M512 630.72 L444.15 698.56 L444.15 754.77 L512 822.62 L579.85 754.77 L579.85 698.56 Z M393.28 512 L325.44 444.15 L269.23 444.15 L201.38 512 L269.23 579.85 L325.44 579.85 Z"/>
+  <path fill="#EBC034" d="M595.95 428.05 L691.9 428.05 L731.64 388.31 L731.64 292.36 L635.69 292.36 L595.95 332.1 Z M595.95 595.95 L595.95 691.9 L635.69 731.64 L731.64 731.64 L731.64 635.69 L691.9 595.95 Z M428.05 595.95 L332.1 595.95 L292.36 635.69 L292.36 731.64 L388.31 731.64 L428.05 691.9 Z M428.05 428.05 L428.05 332.1 L388.31 292.36 L292.36 292.36 L292.36 388.31 L332.1 428.05 Z"/>
+  <path fill="#FBFAF7" d="M512 417.55 L539.66 445.21 L578.79 445.21 L578.79 484.34 L606.45 512 L578.79 539.66 L578.79 578.79 L539.66 578.79 L512 606.45 L484.34 578.79 L445.21 578.79 L445.21 539.66 L417.55 512 L445.21 484.34 L445.21 445.21 L484.34 445.21 Z"/>
+</svg>
