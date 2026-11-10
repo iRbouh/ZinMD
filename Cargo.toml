@@ -3,6 +3,9 @@ name = "zwinmd"
 version = "0.1.0"
 edition = "2024"
 description = "A fast native Markdown editor and viewer"
+license = "MIT"
+repository = "https://github.com/iRbouh/ZwinMD"
+readme = "README.md"
 
 [dependencies]
 # `tree-sitter-languages` turns on syntax highlighting for every language the kit knows.
