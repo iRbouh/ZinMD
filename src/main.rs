@@ -12,6 +12,7 @@ mod files;
 mod motion;
 mod open;
 mod preview;
+mod search;
 mod settings;
 #[cfg(feature = "shot")]
 mod shot;

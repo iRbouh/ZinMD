@@ -17,6 +17,8 @@ use crate::theme::{ActivePalette as _, size};
 enum Target {
     Heading(u32),
     File(PathBuf),
+    /// A line of a file, found by searching the folder.
+    Line(PathBuf, u32),
     Command,
 }
 
@@ -25,9 +27,22 @@ pub(super) struct CommandPalette {
     /// One list of targets per group, in the order the groups are shown.
     targets: Rc<Vec<Vec<Target>>>,
     groups: Vec<(
-        &'static str,
+        SharedString,
         Vec<(IconName, SharedString, Option<Box<dyn Action>>)>,
     )>,
+    /// Whether this palette searches the text of the folder's files, rather
+    /// than offering headings, files and commands.
+    searching: bool,
+}
+
+impl CommandPalette {
+    /// Put text in the palette's field as if it had been typed. For scripted runs.
+    #[cfg(feature = "shot")]
+    pub(super) fn type_query(&self, text: &str, window: &mut Window, cx: &mut App) {
+        let text = text.to_string();
+        self.state
+            .update(cx, |state, cx| state.set_query(text, window, cx));
+    }
 }
 
 impl Workspace {
@@ -47,7 +62,7 @@ impl Workspace {
                     .map(|heading| Target::Heading(heading.line))
                     .collect(),
             );
-            groups.push(("Headings", rows));
+            groups.push(("Headings".into(), rows));
         }
 
         if !self.file_index.is_empty() {
@@ -66,7 +81,7 @@ impl Workspace {
                 .map(|path| (IconName::FileText, label(path), None))
                 .collect();
             targets.push(self.file_index.iter().cloned().map(Target::File).collect());
-            groups.push(("Files", rows));
+            groups.push(("Files".into(), rows));
         }
 
         let commands: Vec<(IconName, &str, Box<dyn Action>)> = vec![
@@ -94,6 +109,11 @@ impl Workspace {
                 "Open a file or folder…",
                 Box::new(OpenFile),
             ),
+            (
+                IconName::TextSearch,
+                "Find in all files…",
+                Box::new(FindInFolder),
+            ),
             (IconName::Share, "Export as HTML…", Box::new(ExportHtml)),
             (
                 IconName::Type,
@@ -107,7 +127,7 @@ impl Workspace {
         ];
         targets.push(commands.iter().map(|_| Target::Command).collect());
         groups.push((
-            "Commands",
+            "Commands".into(),
             commands
                 .into_iter()
                 .map(|(icon, label, action)| (icon, label.into(), Some(action)))
@@ -120,8 +140,75 @@ impl Workspace {
             state,
             targets: Rc::new(targets),
             groups,
+            searching: false,
         });
         cx.notify();
+    }
+
+    /// Open the palette to search the text of every file in the folder.
+    pub(super) fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        state.update(cx, |state, cx| state.focus(window, cx));
+        self.palette = Some(CommandPalette {
+            state,
+            targets: Rc::new(Vec::new()),
+            groups: Vec::new(),
+            searching: true,
+        });
+        cx.notify();
+    }
+
+    /// Search the folder for what was typed, off the main thread, and show the lines found.
+    fn search_folder(&mut self, query: String, cx: &mut Context<Self>) {
+        let files = self.file_index.clone();
+        let root = self.tree.root.clone().unwrap_or_default();
+        self._search = cx.spawn(async move |this, cx| {
+            // Let a burst of typing settle: only the last query is worth running.
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(80))
+                .await;
+            let hits = cx
+                .background_executor()
+                .spawn(async move { crate::search::run(&files, &query, 200) })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some(palette) = this.palette.as_mut().filter(|palette| palette.searching)
+                else {
+                    return;
+                };
+                // One group per file, in the order the files were searched.
+                let (mut targets, mut groups): (Vec<Vec<Target>>, Vec<(SharedString, Vec<_>)>) =
+                    (Vec::new(), Vec::new());
+                let mut current: Option<&PathBuf> = None;
+                for hit in &hits {
+                    if current != Some(&hit.path) {
+                        let name = hit
+                            .path
+                            .strip_prefix(&root)
+                            .unwrap_or(&hit.path)
+                            .to_string_lossy()
+                            .into_owned();
+                        groups.push((name.into(), Vec::new()));
+                        targets.push(Vec::new());
+                        current = Some(&hit.path);
+                    }
+                    let label = format!("{:>4}   {}", hit.line + 1, hit.text);
+                    groups
+                        .last_mut()
+                        .unwrap()
+                        .1
+                        .push((IconName::TextSearch, label.into(), None));
+                    targets
+                        .last_mut()
+                        .unwrap()
+                        .push(Target::Line(hit.path.clone(), hit.line));
+                }
+                palette.targets = Rc::new(targets);
+                palette.groups = groups;
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     pub(super) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -136,7 +223,12 @@ impl Workspace {
         }
     }
 
-    fn run_palette_target(&mut self, at: IndexPath, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn run_palette_target(
+        &mut self,
+        at: IndexPath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(palette) = self.palette.as_ref() else {
             return;
         };
@@ -145,6 +237,10 @@ impl Workspace {
         match targets.get(at.section).and_then(|group| group.get(at.row)) {
             Some(Target::Heading(line)) => self.jump_to_line(*line, window, cx),
             Some(Target::File(path)) => self.open(path.clone(), window, cx),
+            Some(Target::Line(path, line)) => {
+                self.open(path.clone(), window, cx);
+                self.jump_to_line(*line, window, cx);
+            }
             Some(Target::Command) | None => {}
         }
     }
@@ -176,8 +272,24 @@ impl Workspace {
         let p = *cx.palette();
         let (confirm, cancel, dismiss) = (cx.weak_entity(), cx.weak_entity(), cx.weak_entity());
 
+        let searching = palette.searching;
+        let query = cx.weak_entity();
         let mut command = Command::new(&palette.state)
-            .placeholder("Search headings, files and commands")
+            .placeholder(if searching {
+                "Search the text of every file in this folder"
+            } else {
+                "Search headings, files and commands"
+            })
+            // When searching, the rows are already the answer: do not filter them again.
+            .filterable(!searching)
+            .on_query(move |text, _, cx| {
+                if searching {
+                    let text = text.to_string();
+                    query
+                        .update(cx, |this, cx| this.search_folder(text, cx))
+                        .ok();
+                }
+            })
             .max_h(px(420.))
             .on_confirm(move |at, window, cx| {
                 confirm
@@ -197,7 +309,7 @@ impl Workspace {
                     None => item,
                 }
             });
-            command = command.group(CommandGroup::new().label(*title).items(items));
+            command = command.group(CommandGroup::new().label(title.clone()).items(items));
         }
 
         Some(

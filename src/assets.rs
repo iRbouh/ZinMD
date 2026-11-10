@@ -36,6 +36,7 @@ icon_assets!(
         Search,
         Share,
         Sun,
+        TextSearch,
         TriangleAlert,
         Type,
         X,

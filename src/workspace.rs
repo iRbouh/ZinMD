@@ -47,6 +47,7 @@ actions!(
         ToggleScrollSync,
         ToggleTheme,
         OpenPalette,
+        FindInFolder,
         ExportHtml,
         FontBigger,
         FontSmaller,
@@ -76,6 +77,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-k", OpenPalette, None),
         KeyBinding::new("cmd-p", OpenPalette, None),
+        KeyBinding::new("cmd-shift-f", FindInFolder, None),
         KeyBinding::new("cmd-shift-e", ExportHtml, None),
         KeyBinding::new("cmd-=", FontBigger, None),
         KeyBinding::new("cmd-+", FontBigger, None),
@@ -112,6 +114,7 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Select All", edit::SelectAll),
             MenuItem::separator(),
             MenuItem::action("Find…", edit::Search),
+            MenuItem::action("Find in All Files…", FindInFolder),
         ]),
         Menu::new("View").items([
             MenuItem::action("Editor", ViewEditor),
@@ -203,6 +206,7 @@ pub struct Workspace {
     /// Every Markdown file under the open folder, for the command palette.
     file_index: Vec<PathBuf>,
     palette: Option<palette::CommandPalette>,
+    _search: Task<()>,
     /// The palette just closed, fading out, and when it closed.
     palette_leaving: Option<(palette::CommandPalette, Instant)>,
     /// How wide the sidebar is when open; dragging its edge changes this.
@@ -251,6 +255,7 @@ impl Workspace {
             switches: 0,
             file_index: Vec::new(),
             palette: None,
+            _search: Task::ready(()),
             palette_leaving: None,
             sidebar_width: size::SIDEBAR,
             split: 0.5,
@@ -1005,6 +1010,21 @@ impl Workspace {
                 Some(_) => self.close_palette(window, cx),
                 None => self.open_palette(window, cx),
             },
+            "find" => window.dispatch_action(Box::new(edit::Search), cx),
+            "search" => self.open_search(window, cx),
+            // Type into the palette, whichever kind is open.
+            "query" => {
+                if let Some(palette) = &self.palette {
+                    palette.type_query(argument, window, cx);
+                }
+            }
+            // Choose a row of the palette: `pick:<group>.<row>`.
+            "pick" => {
+                let (group, row) = argument.split_once('.').unwrap_or((argument, "0"));
+                let at = gpui_kit::component::IndexPath::new(row.parse().unwrap_or(0))
+                    .section(group.parse().unwrap_or(0));
+                self.run_palette_target(at, window, cx);
+            }
             "tree" => self.on_tree_click(argument.parse().unwrap_or(0), window, cx),
             "theme" => theme::toggle(cx),
             "font" => {
@@ -1163,6 +1183,9 @@ impl Render for Workspace {
                     Some(_) => this.close_palette(window, cx),
                     None => this.open_palette(window, cx),
                 }),
+            )
+            .on_action(
+                cx.listener(|this, _: &FindInFolder, window, cx| this.open_search(window, cx)),
             )
             .on_action(cx.listener(|this, _: &ExportHtml, window, cx| this.export_html(window, cx)))
             .on_action(cx.listener(|this, _: &FontBigger, _, cx| {
