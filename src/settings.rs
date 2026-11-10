@@ -146,12 +146,7 @@ pub fn clamp_size(size: f32) -> f32 {
 }
 
 fn file() -> Option<PathBuf> {
-    // Tests and scripted runs point this elsewhere, to leave the real settings alone.
-    if let Some(file) = std::env::var_os("ZWINMD_SETTINGS") {
-        return Some(PathBuf::from(file));
-    }
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    Some(home.join("Library/Application Support/ZwinMD/settings.json"))
+    Some(crate::session::data_dir().join("settings.json"))
 }
 
 #[cfg(test)]

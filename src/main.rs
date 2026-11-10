@@ -13,6 +13,7 @@ mod motion;
 mod open;
 mod preview;
 mod search;
+mod session;
 mod settings;
 #[cfg(feature = "shot")]
 mod shot;
@@ -59,17 +60,14 @@ fn main() {
         cx.activate(true);
         startup::mark("app activated");
 
+        let session = session::Session::load();
         #[cfg(not(feature = "shot"))]
-        let window_size = size(px(1280.), px(820.));
+        let window_bounds = remembered_bounds(&session, cx);
         #[cfg(feature = "shot")]
-        let window_size = shot::window_size(cx);
+        let window_bounds = Bounds::centered(None, shot::window_size(cx), cx);
 
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                window_size,
-                cx,
-            ))),
+            window_bounds: Some(WindowBounds::Windowed(window_bounds)),
             window_min_size: Some(gpui_kit::size(px(560.), px(360.))),
             titlebar: Some(TitlebarOptions {
                 title: None,
@@ -92,7 +90,7 @@ fn main() {
         let path = path.or_else(|| asked.next());
         let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
             startup::mark("native window created");
-            cx.new(|cx| Workspace::new(path, started, window, cx))
+            cx.new(|cx| Workspace::new(path, session, started, window, cx))
         })
         .expect("failed to open the main window");
         startup::mark("window opened");
@@ -121,4 +119,25 @@ fn main() {
         #[cfg(feature = "shot")]
         shot::after_first_frame(window, workspace, cx);
     });
+}
+
+/// Where the window was last time, if that place still exists: a display may
+/// have been unplugged since. Otherwise a comfortable size in the centre.
+#[cfg(not(feature = "shot"))]
+fn remembered_bounds(session: &session::Session, cx: &App) -> Bounds<Pixels> {
+    let fallback = || Bounds::centered(None, gpui_kit::size(px(1280.), px(820.)), cx);
+    let Some([x, y, width, height]) = session.window else {
+        return fallback();
+    };
+    let bounds = Bounds::new(point(px(x), px(y)), gpui_kit::size(px(width), px(height)));
+    // Enough of the title bar must be on some display to grab the window by.
+    let grip = Bounds::new(
+        bounds.origin,
+        gpui_kit::size(bounds.size.width, size::TITLEBAR),
+    );
+    let reachable = cx.displays().iter().any(|display| {
+        let overlap = display.bounds().intersect(&grip);
+        overlap.size.width >= px(120.) && overlap.size.height >= px(20.)
+    });
+    if reachable { bounds } else { fallback() }
 }

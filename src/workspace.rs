@@ -24,6 +24,7 @@ use crate::doc::{self, Heading, Stats};
 use crate::files::{self, FileTree};
 use crate::motion;
 use crate::preview::BlockMap;
+use crate::session::Session;
 use crate::settings::{self, EditorFont, Settings};
 use crate::startup;
 use crate::sync::{ScrollSync, Side};
@@ -193,6 +194,12 @@ pub struct Workspace {
     tree_scroll: ScrollHandle,
     /// A folder of the file list sliding open or shut.
     tree_motion: Option<sidebar::TreeMotion>,
+    /// Tabs of the last session still to bring back: their files, and which
+    /// of them is the one already open.
+    restore: Option<(Vec<PathBuf>, usize)>,
+    /// The session as last written down, to notice when it changes.
+    saved_session: Option<Session>,
+    _session_save: Task<()>,
     /// Tells us when files change on disk; started after the first frame.
     watcher: Option<crate::watch::Watcher>,
     _watching: Task<()>,
@@ -233,6 +240,7 @@ impl Workspace {
     /// `path` may be a Markdown file, a folder, or nothing.
     pub fn new(
         path: Option<PathBuf>,
+        session: Session,
         started: Instant,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -241,9 +249,16 @@ impl Workspace {
             docs: Vec::new(),
             active: 0,
             next_doc_id: 0,
-            view: ViewMode::Split,
-            sidebar_open: true,
-            sync_enabled: true,
+            view: match session.view.as_str() {
+                "editor" => ViewMode::Editor,
+                "preview" => ViewMode::Preview,
+                _ => ViewMode::Split,
+            },
+            sidebar_open: session.sidebar_open,
+            sync_enabled: session.scroll_sync,
+            restore: None,
+            saved_session: None,
+            _session_save: Task::ready(()),
             tree: FileTree::default(),
             tree_scroll: ScrollHandle::new(),
             tree_motion: None,
@@ -257,8 +272,8 @@ impl Workspace {
             palette: None,
             _search: Task::ready(()),
             palette_leaving: None,
-            sidebar_width: size::SIDEBAR,
-            split: 0.5,
+            sidebar_width: px(session.sidebar_width),
+            split: session.split,
             glide: None,
             settled: (px(0.), px(0.)),
             focus: cx.focus_handle(),
@@ -280,7 +295,20 @@ impl Workspace {
                 (Some(dir), readme)
             }
             Some(file) => (file.parent().map(Path::to_path_buf), Some(file)),
-            None => (None, None),
+            // Nothing asked for: pick up where the last session left off.
+            None => {
+                let tabs: Vec<PathBuf> = session
+                    .tabs
+                    .into_iter()
+                    .filter(|tab| tab.is_file())
+                    .collect();
+                let shown = session.active.min(tabs.len().saturating_sub(1));
+                let file = tabs.get(shown).cloned();
+                if tabs.len() > 1 {
+                    this.restore = Some((tabs, shown));
+                }
+                (session.root.filter(|root| root.is_dir()), file)
+            }
         };
         match file {
             Some(file) => this.open_path(&file, window, cx),
@@ -399,6 +427,25 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The tab the window opens with is simply there; later ones grow in.
+        let born = (!self.docs.is_empty()).then(Instant::now);
+        let ix = self.docs.len();
+        self.insert_doc(ix, path, name, text, born, window, cx);
+        self.activate(ix, window, cx);
+    }
+
+    /// Add a document as tab number `at`, without bringing it on show.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_doc(
+        &mut self,
+        at: usize,
+        path: Option<PathBuf>,
+        name: SharedString,
+        text: String,
+        born: Option<Instant>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let text = SharedString::from(text);
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -425,7 +472,7 @@ impl Workspace {
             FontWeight::MEDIUM,
             window,
         ));
-        self.docs.push(Doc {
+        let doc = Doc {
             id,
             path,
             name,
@@ -440,14 +487,108 @@ impl Workspace {
             disk,
             notice: None,
             tab_width,
-            // The tab the window opens with is simply there; later ones grow in.
-            born: (!self.docs.is_empty()).then(Instant::now),
+            born,
             _changes: changes,
             _blocks: Task::ready(()),
+        };
+        let at = at.min(self.docs.len());
+        self.docs.insert(at, doc);
+        // Tabs after the new one moved along by one.
+        if self.docs.len() > 1 && self.active >= at {
+            self.active += 1;
+        }
+        self.map_blocks(at, Duration::ZERO, cx);
+    }
+
+    /// Bring back the other tabs of the last session, around the one already
+    /// open. Called after the first frame, so they do not hold up launch.
+    fn restore_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((tabs, shown)) = self.restore.take() else {
+            return;
+        };
+        for (ix, path) in tabs.iter().enumerate() {
+            if ix == shown
+                || self
+                    .docs
+                    .iter()
+                    .any(|doc| doc.path.as_deref() == Some(path.as_path()))
+            {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // Tabs saved before the shown one go before it, the rest after.
+            let at = if ix < shown {
+                self.active
+            } else {
+                self.docs.len()
+            };
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            self.insert_doc(at, Some(path.clone()), name.into(), text, None, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The state worth remembering for next time.
+    fn session(&self, window: &Window) -> Session {
+        let bounds = match window.window_bounds() {
+            WindowBounds::Windowed(bounds)
+            | WindowBounds::Maximized(bounds)
+            | WindowBounds::Fullscreen(bounds) => bounds,
+        };
+        let tabs: Vec<PathBuf> = self
+            .docs
+            .iter()
+            .filter_map(|doc| doc.path.clone())
+            .collect();
+        let shown = self.active_doc().and_then(|doc| doc.path.as_ref());
+        Session {
+            window: Some([
+                bounds.origin.x.into(),
+                bounds.origin.y.into(),
+                bounds.size.width.into(),
+                bounds.size.height.into(),
+            ]),
+            root: self.tree.root.clone(),
+            active: shown
+                .and_then(|shown| tabs.iter().position(|tab| tab == shown))
+                .unwrap_or(0),
+            tabs,
+            view: match self.view {
+                ViewMode::Editor => "editor",
+                ViewMode::Split => "split",
+                ViewMode::Preview => "preview",
+            }
+            .into(),
+            sidebar_open: self.sidebar_open,
+            sidebar_width: self.sidebar_width.into(),
+            split: self.split,
+            scroll_sync: self.sync_enabled,
+        }
+    }
+
+    /// Write the session down if it changed. Checked every frame, which is
+    /// simpler and safer than remembering to at every place that changes it;
+    /// the write itself waits for things to settle and happens off the main thread.
+    fn remember_session(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let session = self.session(window);
+        if self.saved_session.as_ref() == Some(&session) {
+            return;
+        }
+        self.saved_session = Some(session.clone());
+        self._session_save = cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(500))
+                .await;
+            cx.background_executor()
+                .spawn(async move { session.save() })
+                .await;
         });
-        let ix = self.docs.len() - 1;
-        self.map_blocks(ix, Duration::ZERO, cx);
-        self.activate(ix, window, cx);
     }
 
     fn on_edit(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
@@ -1086,6 +1227,7 @@ impl Workspace {
             install_menus(cx);
             this.update(cx, |this, cx| {
                 this.opened_ms = Some(ms);
+                this.restore_tabs(window, cx);
                 this.start_watching(window, cx);
                 cx.notify();
             })
@@ -1097,6 +1239,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.time_first_frame(window, cx);
+        self.remember_session(window, cx);
         theme::tick(window, cx);
         #[cfg(feature = "shot")]
         self.frames.push(Instant::now());
