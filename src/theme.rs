@@ -183,7 +183,11 @@ pub trait ActivePalette {
 impl ActivePalette for App {
     fn palette(&self) -> &Palette {
         let palettes = self.global::<Palettes>();
-        if self.theme().is_dark() { &palettes.dark } else { &palettes.light }
+        if self.theme().is_dark() {
+            &palettes.dark
+        } else {
+            &palettes.light
+        }
     }
 }
 
@@ -193,7 +197,10 @@ impl ActivePalette for App {
 /// lists every installed font to check its default exists, which costs about
 /// 70 ms. A theme that names its fonts skips that check.
 #[cfg(target_os = "macos")]
-const FONTS: (Option<&str>, Option<&str>) = (Some(".AppleSystemUIFont"), Some(".AppleSystemUIFontMonospaced"));
+const FONTS: (Option<&str>, Option<&str>) = (
+    Some(".AppleSystemUIFont"),
+    Some(".AppleSystemUIFontMonospaced"),
+);
 #[cfg(not(target_os = "macos"))]
 const FONTS: (Option<&str>, Option<&str>) = (None, None);
 
@@ -220,14 +227,24 @@ pub fn follow_system(cx: &mut App) {
 
 /// Flip between light and dark.
 pub fn toggle(cx: &mut App) {
-    let mode = if cx.theme().is_dark() { ThemeMode::Light } else { ThemeMode::Dark };
+    let mode = if cx.theme().is_dark() {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    };
     Theme::change(mode, None, cx);
 }
 
 fn hex(color: Hsla) -> String {
     let Rgba { r, g, b, a } = color.into();
     let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
-    format!("#{:02x}{:02x}{:02x}{:02x}", byte(r), byte(g), byte(b), byte(a))
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        byte(r),
+        byte(g),
+        byte(b),
+        byte(a)
+    )
 }
 
 /// The palette as the component kit understands it.

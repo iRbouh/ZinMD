@@ -14,13 +14,21 @@ use crate::ui::icon_button;
 const TRAFFIC_LIGHTS: Pixels = px(78.);
 
 impl Workspace {
-    pub(super) fn render_titlebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    pub(super) fn render_titlebar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let p = *cx.palette();
         let mut tabs = Vec::with_capacity(self.docs.len());
         for ix in 0..self.docs.len() {
             tabs.push(self.render_tab(ix, &p, cx));
         }
-        let appearance_icon = if cx.theme().is_dark() { IconName::Sun } else { IconName::Moon };
+        let appearance_icon = if cx.theme().is_dark() {
+            IconName::Sun
+        } else {
+            IconName::Moon
+        };
 
         let left = h_flex()
             .flex_1()
@@ -33,9 +41,13 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
             .children(tabs)
-            .child(icon_button("new-tab", IconName::Plus, &p).on_click(cx.listener(|this, _, window, cx| {
-                this.open_untitled(window, cx);
-            })));
+            .child(
+                icon_button("new-tab", IconName::Plus, &p).on_click(cx.listener(
+                    |this, _, window, cx| {
+                        this.open_untitled(window, cx);
+                    },
+                )),
+            );
 
         let right = h_flex()
             .flex_none()
@@ -45,19 +57,31 @@ impl Workspace {
             .pr(px(12.))
             .child(self.render_view_switch(&p, cx))
             .child(icon_button("search", IconName::Search, &p).ml(px(8.)))
-            .child(icon_button("appearance", appearance_icon, &p).on_click(|_, _, cx| theme::toggle(cx)))
+            .child(
+                icon_button("appearance", appearance_icon, &p)
+                    .on_click(|_, _, cx| theme::toggle(cx)),
+            )
             .child(self.render_export_button(&p));
 
         TitleBar::new()
             .h(size::TITLEBAR)
-            .pl(if window.is_fullscreen() { px(12.) } else { TRAFFIC_LIGHTS })
+            .pl(if window.is_fullscreen() {
+                px(12.)
+            } else {
+                TRAFFIC_LIGHTS
+            })
             .bg(p.surface_app)
             .border_color(p.border_subtle)
             .child(left)
             .child(right)
     }
 
-    fn render_tab(&self, ix: usize, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_tab(
+        &self,
+        ix: usize,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let doc = &self.docs[ix];
         let active = ix == self.active;
         let (hover, strong) = (p.surface_hover, p.text_primary);
@@ -67,7 +91,7 @@ impl Workspace {
             .relative()
             .flex_none()
             .size(px(16.))
-            .when(doc.dirty, |slot| {
+            .when(doc.dirty(), |slot| {
                 slot.child(
                     div()
                         .absolute()
@@ -95,7 +119,7 @@ impl Workspace {
                     .child(Icon::new(IconName::X).size(px(12.)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.close_tab(ix, window, cx);
+                        this.request_close(ix, window, cx);
                     })),
             );
 
@@ -112,7 +136,9 @@ impl Workspace {
             .border_1()
             .map(|tab| {
                 if active {
-                    tab.bg(p.surface_raised).border_color(p.border_subtle).font_weight(FontWeight::MEDIUM)
+                    tab.bg(p.surface_raised)
+                        .border_color(p.border_subtle)
+                        .font_weight(FontWeight::MEDIUM)
                 } else {
                     tab.border_color(gpui_kit::transparent_black())
                         .text_color(p.text_secondary)
@@ -122,7 +148,11 @@ impl Workspace {
             .child(
                 Icon::new(IconName::FileText)
                     .size(px(14.))
-                    .text_color(if active { p.accent_hover } else { p.text_tertiary }),
+                    .text_color(if active {
+                        p.accent_hover
+                    } else {
+                        p.text_tertiary
+                    }),
             )
             .child(div().flex_1().min_w_0().truncate().child(doc.name.clone()))
             .child(trailing)
@@ -142,9 +172,12 @@ impl Workspace {
                 .rounded(px(5.))
                 .map(|item| {
                     if self.view == mode {
-                        item.bg(p.accent).text_color(p.text_on_accent).font_weight(FontWeight::SEMIBOLD)
+                        item.bg(p.accent)
+                            .text_color(p.text_on_accent)
+                            .font_weight(FontWeight::SEMIBOLD)
                     } else {
-                        item.text_color(p.text_secondary).hover(move |style| style.text_color(strong))
+                        item.text_color(p.text_secondary)
+                            .hover(move |style| style.text_color(strong))
                     }
                 })
                 .child(Icon::new(icon).size(px(14.)))

@@ -6,39 +6,96 @@ mod statusbar;
 mod titlebar;
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use gpui_kit::base::input as edit;
 use gpui_kit::component::input::{Editor, EditorState, InputEvent, Position};
-use gpui_kit::component::text::TextView;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
+use gpui_kit::component::text::{TextView, TextViewState};
+use gpui_kit::component::v_flex;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::doc::{self, Heading, Stats};
 use crate::files::{self, FileTree};
+use crate::preview::{self, BlockMap};
 use crate::startup;
-use crate::theme::{self, ActivePalette as _, size};
+use crate::sync::{ScrollSync, Side};
+use crate::theme::{self, ActivePalette as _, Palette, size};
 
 actions!(
     zwinmd,
-    [ToggleSidebar, ToggleTheme, ViewEditor, ViewSplit, ViewPreview, CloseTab, NextTab, PreviousTab, Quit]
+    [
+        NewFile,
+        OpenFile,
+        Save,
+        SaveAs,
+        CloseTab,
+        NextTab,
+        PreviousTab,
+        ViewEditor,
+        ViewSplit,
+        ViewPreview,
+        ToggleSidebar,
+        ToggleScrollSync,
+        ToggleTheme,
+        Quit
+    ]
 );
 
-/// Register the app's keyboard shortcuts. Call once at startup.
+/// Register the app's keyboard shortcuts and menu bar. Call once at startup.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("cmd-b", ToggleSidebar, None),
-        KeyBinding::new("cmd-1", ViewEditor, None),
-        KeyBinding::new("cmd-2", ViewSplit, None),
-        KeyBinding::new("cmd-3", ViewPreview, None),
+        KeyBinding::new("cmd-n", NewFile, None),
+        KeyBinding::new("cmd-o", OpenFile, None),
+        KeyBinding::new("cmd-s", Save, None),
+        KeyBinding::new("cmd-shift-s", SaveAs, None),
         KeyBinding::new("cmd-w", CloseTab, None),
         KeyBinding::new("cmd-}", NextTab, None),
         KeyBinding::new("cmd-{", PreviousTab, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
+        KeyBinding::new("cmd-1", ViewEditor, None),
+        KeyBinding::new("cmd-2", ViewSplit, None),
+        KeyBinding::new("cmd-3", ViewPreview, None),
+        KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-q", Quit, None),
     ]);
+    // Reached only when no window is there to ask about unsaved changes.
     cx.on_action(|_: &Quit, cx| cx.quit());
+
+    cx.set_menus(vec![
+        Menu::new("zwinMD").items([MenuItem::action("Quit zwinMD", Quit)]),
+        Menu::new("File").items([
+            MenuItem::action("New", NewFile),
+            MenuItem::action("Open…", OpenFile),
+            MenuItem::separator(),
+            MenuItem::action("Save", Save),
+            MenuItem::action("Save As…", SaveAs),
+            MenuItem::separator(),
+            MenuItem::action("Close Tab", CloseTab),
+        ]),
+        Menu::new("Edit").items([
+            MenuItem::action("Undo", edit::Undo),
+            MenuItem::action("Redo", edit::Redo),
+            MenuItem::separator(),
+            MenuItem::action("Cut", edit::Cut),
+            MenuItem::action("Copy", edit::Copy),
+            MenuItem::action("Paste", edit::Paste),
+            MenuItem::action("Select All", edit::SelectAll),
+            MenuItem::separator(),
+            MenuItem::action("Find…", edit::Search),
+        ]),
+        Menu::new("View").items([
+            MenuItem::action("Editor", ViewEditor),
+            MenuItem::action("Split", ViewSplit),
+            MenuItem::action("Preview", ViewPreview),
+            MenuItem::separator(),
+            MenuItem::action("Show or Hide Sidebar", ToggleSidebar),
+            MenuItem::action("Turn Scroll Sync On or Off", ToggleScrollSync),
+            MenuItem::action("Switch Light and Dark", ToggleTheme),
+        ]),
+    ]);
 }
 
 /// Which panes the window shows.
@@ -56,12 +113,24 @@ pub struct Doc {
     path: Option<PathBuf>,
     name: SharedString,
     editor: Entity<EditorState>,
-    /// The source as of the last edit; what the preview renders.
+    preview: Entity<TextViewState>,
+    /// The source as of the last edit.
     text: SharedString,
+    /// The source as it is on disk.
+    saved: SharedString,
     headings: Vec<Heading>,
     stats: Stats,
-    dirty: bool,
+    /// Which source lines each preview row shows; rebuilt in the background after edits.
+    blocks: BlockMap,
+    sync: ScrollSync,
     _changes: Subscription,
+    _blocks: Task<()>,
+}
+
+impl Doc {
+    fn dirty(&self) -> bool {
+        self.text != self.saved
+    }
 }
 
 pub struct Workspace {
@@ -70,9 +139,16 @@ pub struct Workspace {
     next_doc_id: usize,
     view: ViewMode,
     sidebar_open: bool,
+    sync_enabled: bool,
     tree: FileTree,
     tree_scroll: UniformListScrollHandle,
+    /// Widths of the sidebar and the document area.
+    sidebar_split: Entity<ResizableState>,
+    /// Widths of the editor and the preview.
+    pane_split: Entity<ResizableState>,
     focus: FocusHandle,
+    /// Set once the user agreed to lose, or saved, every unsaved change.
+    close_confirmed: bool,
     /// When the process started, to report how long opening took.
     started: Instant,
     opened_ms: Option<f64>,
@@ -81,16 +157,25 @@ pub struct Workspace {
 
 impl Workspace {
     /// `path` may be a Markdown file, a folder, or nothing.
-    pub fn new(path: Option<PathBuf>, started: Instant, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        path: Option<PathBuf>,
+        started: Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut this = Self {
             docs: Vec::new(),
             active: 0,
             next_doc_id: 0,
             view: ViewMode::Split,
             sidebar_open: true,
+            sync_enabled: true,
             tree: FileTree::default(),
             tree_scroll: UniformListScrollHandle::new(),
+            sidebar_split: cx.new(|_| ResizableState::default()),
+            pane_split: cx.new(|_| ResizableState::default()),
             focus: cx.focus_handle(),
+            close_confirmed: false,
             started,
             opened_ms: None,
             first_frame_requested: false,
@@ -99,7 +184,10 @@ impl Workspace {
         let path = path.map(|path| path.canonicalize().unwrap_or(path));
         let (root, file) = match path {
             Some(dir) if dir.is_dir() => {
-                let readme = ["README.md", "readme.md", "index.md"].iter().map(|name| dir.join(name)).find(|p| p.is_file());
+                let readme = ["README.md", "readme.md", "index.md"]
+                    .iter()
+                    .map(|name| dir.join(name))
+                    .find(|p| p.is_file());
                 (Some(dir), readme)
             }
             Some(file) => (file.parent().map(Path::to_path_buf), Some(file)),
@@ -110,6 +198,32 @@ impl Workspace {
             None => this.open_untitled(window, cx),
         }
         this.set_root(root, cx);
+
+        // The red window button: ask about unsaved changes before closing.
+        let weak = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            let Some(this) = weak.upgrade() else {
+                return true;
+            };
+            this.update(cx, |this, cx| {
+                if this.close_confirmed || !this.docs.iter().any(Doc::dirty) {
+                    return true;
+                }
+                let confirmed = this.confirm_closing_all(window, cx);
+                cx.spawn_in(window, async move |this, cx| {
+                    if confirmed.await {
+                        this.update_in(cx, |this, window, _| {
+                            this.close_confirmed = true;
+                            window.remove_window();
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+                false
+            })
+        });
+
         startup::mark("document loaded");
         this
     }
@@ -118,17 +232,52 @@ impl Workspace {
         self.docs.get(self.active)
     }
 
+    fn doc_ix(&self, id: usize) -> Option<usize> {
+        self.docs.iter().position(|doc| doc.id == id)
+    }
+
     // ------------------------------------------------------------ documents
 
+    /// Open a file in a tab, or show a folder in the sidebar.
+    fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let path = path.canonicalize().unwrap_or(path);
+        if path.is_dir() {
+            self.set_root(Some(path), cx);
+            return;
+        }
+        if self.tree.root.is_none() {
+            self.set_root(path.parent().map(Path::to_path_buf), cx);
+        }
+        // An untouched empty tab was only a placeholder: the file takes its place.
+        let placeholder = match self.docs.as_slice() {
+            [only] if only.path.is_none() && only.text.is_empty() => Some(only.id),
+            _ => None,
+        };
+        self.open_path(&path, window, cx);
+        if let Some(ix) = placeholder.and_then(|id| self.doc_ix(id)) {
+            self.docs.remove(ix);
+            self.active = self.active.saturating_sub(1);
+        }
+    }
+
     /// Show `path` in a tab, reusing its tab if it is already open.
-    pub fn open_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.docs.iter().position(|doc| doc.path.as_deref() == Some(path)) {
+    fn open_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .docs
+            .iter()
+            .position(|doc| doc.path.as_deref() == Some(path))
+        {
             self.activate(ix, window, cx);
             return;
         }
         // Not valid UTF-8, or unreadable: open what we can rather than nothing.
-        let text = std::fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default();
-        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let text = std::fs::read(path)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         self.push_doc(Some(path.to_path_buf()), name.into(), text, window, cx);
     }
 
@@ -146,8 +295,13 @@ impl Workspace {
     ) {
         let text = SharedString::from(text);
         let editor = cx.new(|cx| {
-            EditorState::new(window, cx).language("markdown").line_number(true).soft_wrap(true).default_value(text.clone())
+            EditorState::new(window, cx)
+                .language("markdown")
+                .line_number(true)
+                .soft_wrap(true)
+                .default_value(text.clone())
         });
+        let preview = cx.new(|cx| TextViewState::markdown(&text, cx));
         let changes = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.on_edit(&editor, cx);
@@ -160,23 +314,58 @@ impl Workspace {
             path,
             name,
             editor,
+            preview,
             headings: doc::outline(&text),
             stats: Stats::of(&text),
+            saved: text.clone(),
             text,
-            dirty: false,
+            blocks: BlockMap::default(),
+            sync: ScrollSync::default(),
             _changes: changes,
+            _blocks: Task::ready(()),
         });
-        self.activate(self.docs.len() - 1, window, cx);
+        let ix = self.docs.len() - 1;
+        self.map_blocks(ix, Duration::ZERO, cx);
+        self.activate(ix, window, cx);
     }
 
     fn on_edit(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
-        let Some(doc) = self.docs.iter_mut().find(|doc| doc.editor == *editor) else { return };
+        let Some(ix) = self.docs.iter().position(|doc| doc.editor == *editor) else {
+            return;
+        };
         let text = SharedString::from(editor.read(cx).text().to_string());
+        let doc = &mut self.docs[ix];
         doc.headings = doc::outline(&text);
         doc.stats = Stats::of(&text);
+        doc.preview
+            .update(cx, |preview, cx| preview.set_text(&text, cx));
         doc.text = text;
-        doc.dirty = true;
+        // Wait for a pause in typing: the map is only needed to scroll.
+        self.map_blocks(ix, Duration::from_millis(80), cx);
         cx.notify();
+    }
+
+    /// Rebuild the line map of a document off the main thread. A newer request
+    /// replaces one that is still waiting.
+    fn map_blocks(&mut self, ix: usize, delay: Duration, cx: &mut Context<Self>) {
+        let doc = &mut self.docs[ix];
+        let (id, text) = (doc.id, doc.text.clone());
+        doc._blocks = cx.spawn(async move |this, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let blocks = cx
+                .background_executor()
+                .spawn(async move { BlockMap::parse(&text) })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(ix) = this.doc_ix(id) {
+                    this.docs[ix].blocks = blocks;
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
     }
 
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -184,30 +373,23 @@ impl Workspace {
             return;
         }
         self.active = ix;
-        self.docs[ix].editor.update(cx, |editor, cx| editor.focus(window, cx));
+        self.docs[ix]
+            .editor
+            .update(cx, |editor, cx| editor.focus(window, cx));
         if let Some(path) = self.docs[ix].path.clone() {
             self.tree.reveal(&path);
         }
         cx.notify();
     }
 
-    fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.docs.len() {
-            return;
-        }
-        self.docs.remove(ix);
-        if self.docs.is_empty() {
-            window.remove_window();
-            return;
-        }
-        let next = if ix < self.active { self.active - 1 } else { self.active.min(self.docs.len() - 1) };
-        self.activate(next, window, cx);
-    }
-
     fn cycle_tab(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.docs.len() as isize;
         if count > 1 {
-            self.activate((self.active as isize + step).rem_euclid(count) as usize, window, cx);
+            self.activate(
+                (self.active as isize + step).rem_euclid(count) as usize,
+                window,
+                cx,
+            );
         }
     }
 
@@ -220,18 +402,246 @@ impl Workspace {
         });
     }
 
+    // --------------------------------------------------------------- saving
+
+    /// Save a document, asking where if it has no file yet or `ask` is set.
+    /// Resolves to whether it is now saved.
+    fn save_doc(
+        &mut self,
+        id: usize,
+        ask: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        let Some(ix) = self.doc_ix(id) else {
+            return Task::ready(false);
+        };
+        let doc = &self.docs[ix];
+        if doc.path.is_some() && !ask {
+            return Task::ready(self.write_doc(ix, window, cx));
+        }
+        let folder = doc
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .or_else(|| self.tree.root.clone())
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_default();
+        let chosen = cx.prompt_for_new_path(&folder, Some(&doc.name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut path))) = chosen.await else {
+                return false;
+            };
+            if path.extension().is_none() {
+                path.set_extension("md");
+            }
+            this.update_in(cx, |this, window, cx| {
+                let Some(ix) = this.doc_ix(id) else {
+                    return false;
+                };
+                let doc = &mut this.docs[ix];
+                doc.name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+                    .into();
+                doc.path = Some(path.clone());
+                let saved = this.write_doc(ix, window, cx);
+                // The new file may belong in the sidebar.
+                match this.tree.root {
+                    Some(_) => this.tree.refresh(),
+                    None => this.set_root(path.parent().map(Path::to_path_buf), cx),
+                }
+                this.tree.reveal(&path);
+                saved
+            })
+            .unwrap_or(false)
+        })
+    }
+
+    /// Write a document to its file. Tells the user if that fails.
+    fn write_doc(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let doc = &mut self.docs[ix];
+        let Some(path) = &doc.path else { return false };
+        match std::fs::write(path, doc.text.as_bytes()) {
+            Ok(()) => {
+                doc.saved = doc.text.clone();
+                cx.notify();
+                true
+            }
+            Err(error) => {
+                let message = format!("“{}” could not be saved.", doc.name);
+                drop(window.prompt(
+                    PromptLevel::Critical,
+                    &message,
+                    Some(&error.to_string()),
+                    &["OK"],
+                    cx,
+                ));
+                false
+            }
+        }
+    }
+
+    /// Close a tab, first offering to save it if it has unsaved changes.
+    fn request_close(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(ix) else { return };
+        let id = doc.id;
+        if !doc.dirty() {
+            self.close_doc(id, window, cx);
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!(
+                "Do you want to save the changes you made to “{}”?",
+                doc.name
+            ),
+            Some("Your changes will be lost if you don’t save them."),
+            &["Save", "Don’t Save", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let close = match answer.await {
+                Ok(0) => match this
+                    .update_in(cx, |this, window, cx| this.save_doc(id, false, window, cx))
+                {
+                    Ok(saving) => saving.await,
+                    Err(_) => false,
+                },
+                Ok(1) => true,
+                _ => false,
+            };
+            if close {
+                this.update_in(cx, |this, window, cx| this.close_doc(id, window, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn close_doc(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.doc_ix(id) else { return };
+        self.docs.remove(ix);
+        if self.docs.is_empty() {
+            self.close_confirmed = true;
+            window.remove_window();
+            return;
+        }
+        let next = if ix < self.active {
+            self.active - 1
+        } else {
+            self.active.min(self.docs.len() - 1)
+        };
+        self.activate(next, window, cx);
+    }
+
+    /// Before closing everything: offer to save what is unsaved. Resolves to
+    /// whether closing may go ahead.
+    fn confirm_closing_all(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        let unsaved: Vec<usize> = self
+            .docs
+            .iter()
+            .filter(|doc| doc.dirty())
+            .map(|doc| doc.id)
+            .collect();
+        let (message, save) = match unsaved.as_slice() {
+            [] => return Task::ready(true),
+            [one] => {
+                let name = self
+                    .doc_ix(*one)
+                    .map(|ix| self.docs[ix].name.clone())
+                    .unwrap_or_default();
+                (
+                    format!("Do you want to save the changes you made to “{name}”?"),
+                    "Save",
+                )
+            }
+            many => (
+                format!(
+                    "You have {} documents with unsaved changes. Do you want to save them?",
+                    many.len()
+                ),
+                "Save All",
+            ),
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some("Your changes will be lost if you don’t save them."),
+            &[save, "Don’t Save", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| match answer.await {
+            Ok(0) => {
+                for id in unsaved {
+                    let Ok(saving) =
+                        this.update_in(cx, |this, window, cx| this.save_doc(id, false, window, cx))
+                    else {
+                        return false;
+                    };
+                    if !saving.await {
+                        return false;
+                    }
+                }
+                true
+            }
+            Ok(1) => true,
+            _ => false,
+        })
+    }
+
+    fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let confirmed = self.confirm_closing_all(window, cx);
+        cx.spawn(async move |_, cx| {
+            if confirmed.await {
+                cx.update(|cx| cx.quit());
+            }
+        })
+        .detach();
+    }
+
+    fn open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                for path in paths {
+                    this.open(path, window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     // ------------------------------------------------------------- sidebar
 
     /// Point the file tree at a folder. The folder is read off the main thread.
     fn set_root(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
-        self.tree = FileTree { root: root.clone(), rows: Vec::new() };
+        self.tree = FileTree {
+            root: root.clone(),
+            rows: Vec::new(),
+        };
+        cx.notify();
         let Some(root) = root else { return };
         let reveal = self.active_doc().and_then(|doc| doc.path.clone());
         cx.spawn(async move |this, cx| {
             let tree = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut tree = FileTree { rows: files::read_dir(&root, 0), root: Some(root) };
+                    let mut tree = FileTree {
+                        rows: files::read_dir(&root, 0),
+                        root: Some(root),
+                    };
                     if let Some(path) = reveal {
                         tree.reveal(&path);
                     }
@@ -239,8 +649,11 @@ impl Workspace {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.tree = tree;
-                cx.notify();
+                // Unless another folder was chosen while this one was being read.
+                if this.tree.root == tree.root {
+                    this.tree = tree;
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -248,7 +661,9 @@ impl Workspace {
     }
 
     fn on_tree_click(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(row) = self.tree.rows.get(ix) else { return };
+        let Some(row) = self.tree.rows.get(ix) else {
+            return;
+        };
         if row.is_dir {
             self.tree.toggle(ix);
             cx.notify();
@@ -261,6 +676,14 @@ impl Workspace {
     // ------------------------------------------------------------- commands
 
     fn set_view(&mut self, view: ViewMode, cx: &mut Context<Self>) {
+        // A pane that was hidden catches up with the one that stayed on screen.
+        let shown = match self.view {
+            ViewMode::Preview => Side::Preview,
+            _ => Side::Editor,
+        };
+        if let Some(doc) = self.docs.get_mut(self.active) {
+            doc.sync.follow(shown);
+        }
         self.view = view;
         cx.notify();
     }
@@ -270,41 +693,148 @@ impl Workspace {
         cx.notify();
     }
 
+    fn toggle_scroll_sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_enabled = !self.sync_enabled;
+        if let Some(doc) = self.docs.get_mut(self.active) {
+            doc.sync.follow(Side::Editor);
+        }
+        cx.notify();
+    }
+
+    /// One step of a `ZWINMD_SCRIPT`, standing in for the user in scripted checks:
+    /// `editor:<px>` and `preview:<px>` scroll a pane, `type:<text>` types at the
+    /// caret, `line:<n>` moves the caret, `view:editor|split|preview`, `sidebar`,
+    /// `sync`, `new`, `open:<path>`, `save` and `close` run those commands.
+    #[cfg(feature = "shot")]
+    pub fn debug_step(&mut self, step: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let (command, argument) = step.split_once(':').unwrap_or((step, ""));
+        let Some(doc) = self.active_doc() else { return };
+        let id = doc.id;
+        match command {
+            "editor" => {
+                let y = -px(argument.parse().unwrap_or(0.));
+                doc.editor.update(cx, |editor, cx| {
+                    editor.set_scroll_offset(point(px(0.), y), cx)
+                });
+            }
+            "preview" => doc
+                .preview
+                .read(cx)
+                .list_state()
+                .scroll_by(px(argument.parse().unwrap_or(0.))),
+            "type" => {
+                let text = argument.replace("\\n", "\n");
+                // Report what one edit costs: until the editor repaints, and
+                // until the preview shows the new text.
+                let edited = Instant::now();
+                doc.editor
+                    .update(cx, |editor, cx| editor.insert(text, window, cx));
+                window.on_next_frame(move |_, _| {
+                    eprintln!(
+                        "edit -> frame   {:>6.1} ms",
+                        edited.elapsed().as_secs_f64() * 1000.
+                    )
+                });
+                let mut seen = false;
+                cx.observe(&doc.preview, move |_, _, _| {
+                    if !std::mem::replace(&mut seen, true) {
+                        eprintln!(
+                            "edit -> preview {:>6.1} ms",
+                            edited.elapsed().as_secs_f64() * 1000.
+                        );
+                    }
+                })
+                .detach();
+            }
+            "line" => self.jump_to_line(argument.parse().unwrap_or(0), window, cx),
+            "view" => self.set_view(
+                match argument {
+                    "editor" => ViewMode::Editor,
+                    "preview" => ViewMode::Preview,
+                    _ => ViewMode::Split,
+                },
+                cx,
+            ),
+            "sidebar" => self.toggle_sidebar(cx),
+            "sync" => self.toggle_scroll_sync(cx),
+            "new" => self.open_untitled(window, cx),
+            "open" => self.open(PathBuf::from(argument), window, cx),
+            "save" => self.save_doc(id, false, window, cx).detach(),
+            "close" => self.request_close(self.active, window, cx),
+            other => eprintln!("unknown script step: {other}"),
+        }
+        cx.notify();
+    }
+
     // ---------------------------------------------------------------- panes
 
-    fn render_panes(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let p = *cx.palette();
-        let row = h_flex().flex_1().min_w_0().h_full();
-        let Some(doc) = self.active_doc() else { return row };
+    /// Keep the two panes on the same part of the document.
+    fn sync_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sync_enabled || self.view != ViewMode::Split {
+            return;
+        }
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return;
+        };
+        if doc.sync.update(&doc.editor, &doc.preview, &doc.blocks, cx) {
+            window.request_animation_frame();
+        }
+    }
 
-        let editor = (self.view != ViewMode::Preview).then(|| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .bg(p.surface_editor)
-                .child(Editor::new(&doc.editor).appearance(false).bordered(false).h_full())
-        });
-        let preview = (self.view != ViewMode::Editor).then(|| {
-            div()
-                .id(("preview", doc.id))
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .bg(p.surface_preview)
-                .when(self.view == ViewMode::Split, |pane| pane.border_l_1().border_color(p.border_subtle))
-                .overflow_y_scroll()
-                .child(
-                    div()
-                        .mx_auto()
-                        .max_w(px(820.))
-                        .px(px(48.))
-                        .py(px(40.))
-                        .text_size(size::FONT_BODY)
-                        .child(TextView::markdown(("markdown", doc.id), doc.text.clone()).selectable(true)),
-                )
-        });
-        row.children(editor).children(preview)
+    /// How wide the preview pane is, to centre its text column.
+    fn preview_width(&self, window: &Window, cx: &App) -> Pixels {
+        let sidebar = match self.sidebar_open {
+            true => self
+                .sidebar_split
+                .read(cx)
+                .sizes()
+                .first()
+                .copied()
+                .unwrap_or(size::SIDEBAR),
+            false => px(0.),
+        };
+        let area = window.viewport_size().width - sidebar;
+        match self.view {
+            ViewMode::Split => self
+                .pane_split
+                .read(cx)
+                .sizes()
+                .get(1)
+                .copied()
+                .unwrap_or(area / 2.),
+            _ => area,
+        }
+    }
+
+    fn render_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = *cx.palette();
+        let Some(doc) = self.active_doc() else {
+            return div().into_any_element();
+        };
+
+        let editor = div().size_full().bg(p.surface_editor).child(
+            Editor::new(&doc.editor)
+                .appearance(false)
+                .bordered(false)
+                .h_full(),
+        );
+        let preview = render_preview(doc, self.preview_width(window, cx), &p, cx);
+
+        h_resizable("panes")
+            .with_state(&self.pane_split)
+            .child(
+                resizable_panel()
+                    .visible(self.view != ViewMode::Preview)
+                    .size_range(px(240.)..Pixels::MAX)
+                    .child(editor),
+            )
+            .child(
+                resizable_panel()
+                    .visible(self.view != ViewMode::Editor)
+                    .size_range(px(240.)..Pixels::MAX)
+                    .child(preview),
+            )
+            .into_any_element()
     }
 
     /// Record how long it took from process start to the first frame on screen.
@@ -333,13 +863,70 @@ impl Workspace {
     }
 }
 
+/// Widest the text column of the preview gets, for comfortable line lengths.
+const PREVIEW_COLUMN: Pixels = px(760.);
+/// Clear space above the preview text.
+const PREVIEW_TOP: Pixels = px(28.);
+
+fn render_preview(doc: &Doc, width: Pixels, p: &Palette, cx: &App) -> impl IntoElement + use<> {
+    let list = doc.preview.read(cx).list_state().clone();
+    let margin = ((width - PREVIEW_COLUMN) / 2.).max(px(40.));
+    let top = list.logical_scroll_top();
+    let scrolled = top.item_ix > 0 || top.offset_in_item > px(0.);
+    let clear = p.surface_preview.opacity(0.);
+
+    div()
+        .id(("preview", doc.id))
+        .relative()
+        .size_full()
+        .bg(p.surface_preview)
+        // The margins beside the text column scroll the document too.
+        .on_scroll({
+            let list = list.clone();
+            move |event, window, _| {
+                if !list.viewport_bounds().contains(&event.position) {
+                    list.scroll_by(-event.delta.pixel_delta(px(20.)).y);
+                    window.refresh();
+                }
+            }
+        })
+        .child(
+            TextView::new(&doc.preview)
+                .scrollable(true)
+                .selectable(true)
+                .style(preview::style())
+                .markdown_extensions(preview::extensions())
+                .text_size(size::FONT_BODY)
+                .line_height(relative(1.65))
+                .px(margin)
+                .pt(PREVIEW_TOP),
+        )
+        // Text scrolling out at the top fades away instead of being cut off.
+        .when(scrolled, |pane| {
+            pane.child(
+                div()
+                    .absolute()
+                    .top(PREVIEW_TOP)
+                    .left_0()
+                    .right(px(12.))
+                    .h(px(20.))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(p.surface_preview, 0.),
+                        linear_color_stop(clear, 1.),
+                    )),
+            )
+        })
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.time_first_frame(window, cx);
+        self.sync_scroll(window, cx);
         let p = *cx.palette();
         let titlebar = self.render_titlebar(window, cx);
-        let sidebar = self.sidebar_open.then(|| self.render_sidebar(cx));
-        let panes = self.render_panes(cx);
+        let sidebar = self.render_sidebar(cx);
+        let panes = self.render_panes(window, cx);
         let statusbar = self.render_statusbar(cx);
 
         v_flex()
@@ -349,16 +936,55 @@ impl Render for Workspace {
             .text_color(p.text_primary)
             .text_size(size::FONT_UI)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
-            .on_action(cx.listener(|_, _: &ToggleTheme, _, cx| theme::toggle(cx)))
-            .on_action(cx.listener(|this, _: &ViewEditor, _, cx| this.set_view(ViewMode::Editor, cx)))
-            .on_action(cx.listener(|this, _: &ViewSplit, _, cx| this.set_view(ViewMode::Split, cx)))
-            .on_action(cx.listener(|this, _: &ViewPreview, _, cx| this.set_view(ViewMode::Preview, cx)))
-            .on_action(cx.listener(|this, _: &CloseTab, window, cx| this.close_tab(this.active, window, cx)))
+            .on_action(cx.listener(|this, _: &NewFile, window, cx| this.open_untitled(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenFile, window, cx| this.open_dialog(window, cx)))
+            .on_action(cx.listener(|this, _: &Save, window, cx| {
+                if let Some(id) = this.active_doc().map(|doc| doc.id) {
+                    this.save_doc(id, false, window, cx).detach();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
+                if let Some(id) = this.active_doc().map(|doc| doc.id) {
+                    this.save_doc(id, true, window, cx).detach();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+                this.request_close(this.active, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(1, window, cx)))
-            .on_action(cx.listener(|this, _: &PreviousTab, window, cx| this.cycle_tab(-1, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &PreviousTab, window, cx| this.cycle_tab(-1, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ViewEditor, _, cx| this.set_view(ViewMode::Editor, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ViewSplit, _, cx| this.set_view(ViewMode::Split, cx)))
+            .on_action(
+                cx.listener(|this, _: &ViewPreview, _, cx| this.set_view(ViewMode::Preview, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &ToggleScrollSync, _, cx| this.toggle_scroll_sync(cx)))
+            .on_action(cx.listener(|_, _: &ToggleTheme, _, cx| theme::toggle(cx)))
+            .on_action(cx.listener(|this, _: &Quit, window, cx| this.quit(window, cx)))
             .child(titlebar)
-            .child(h_flex().flex_1().min_h_0().w_full().children(sidebar).child(panes))
+            .child(
+                div().flex_1().min_h_0().w_full().child(
+                    h_resizable("workspace")
+                        .with_state(&self.sidebar_split)
+                        .child(
+                            resizable_panel()
+                                .visible(self.sidebar_open)
+                                .size(size::SIDEBAR)
+                                .size_range(px(180.)..px(480.))
+                                .child(sidebar),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size_range(px(320.)..Pixels::MAX)
+                                .child(panes),
+                        ),
+                ),
+            )
             .child(statusbar)
     }
 }

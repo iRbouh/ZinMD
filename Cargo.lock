@@ -8941,5 +8941,6 @@ dependencies = [
  "gpui-kit",
  "gpui-pre",
  "gpui-pre-platform",
+ "markdown",
  "serde_json",
 ]

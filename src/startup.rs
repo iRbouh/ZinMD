@@ -31,7 +31,10 @@ pub fn mark(stage: &'static str) {
         return;
     }
     if let Some(start) = *START.lock().unwrap() {
-        MARKS.lock().unwrap().push((stage, start.elapsed().as_secs_f64() * 1000.));
+        MARKS
+            .lock()
+            .unwrap()
+            .push((stage, start.elapsed().as_secs_f64() * 1000.));
     }
 }
 

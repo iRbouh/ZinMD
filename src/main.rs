@@ -8,9 +8,11 @@
 mod assets;
 mod doc;
 mod files;
+mod preview;
 #[cfg(feature = "shot")]
 mod shot;
 mod startup;
+mod sync;
 mod theme;
 mod ui;
 mod workspace;
@@ -50,7 +52,11 @@ fn main() {
         let window_size = shot::window_size(cx);
 
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                window_size,
+                cx,
+            ))),
             window_min_size: Some(gpui_kit::size(px(560.), px(360.))),
             titlebar: Some(TitlebarOptions {
                 title: None,
@@ -62,15 +68,14 @@ fn main() {
             app_owns_titlebar_drag: true,
             ..Default::default()
         };
-        let (_window, _workspace) =
-            gpui_kit::open_window(options, cx, |window, cx| {
-                startup::mark("native window created");
-                cx.new(|cx| Workspace::new(path, started, window, cx))
-            })
-                .expect("failed to open the main window");
+        let (_window, _workspace) = gpui_kit::open_window(options, cx, |window, cx| {
+            startup::mark("native window created");
+            cx.new(|cx| Workspace::new(path, started, window, cx))
+        })
+        .expect("failed to open the main window");
         startup::mark("window opened");
 
         #[cfg(feature = "shot")]
-        shot::after_first_frame(_window, cx);
+        shot::after_first_frame(_window, _workspace, cx);
     });
 }

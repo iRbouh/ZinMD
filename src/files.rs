@@ -28,7 +28,9 @@ pub struct FileTree {
 impl FileTree {
     /// Open or close the folder at `ix`.
     pub fn toggle(&mut self, ix: usize) {
-        let Some(row) = self.rows.get_mut(ix) else { return };
+        let Some(row) = self.rows.get_mut(ix) else {
+            return;
+        };
         if !row.is_dir {
             return;
         }
@@ -38,8 +40,32 @@ impl FileTree {
             let children = read_dir(&row.path, depth + 1);
             self.rows.splice(ix + 1..ix + 1, children);
         } else {
-            let end = self.rows[ix + 1..].iter().position(|r| r.depth <= depth).map_or(self.rows.len(), |n| ix + 1 + n);
+            let end = self.rows[ix + 1..]
+                .iter()
+                .position(|r| r.depth <= depth)
+                .map_or(self.rows.len(), |n| ix + 1 + n);
             self.rows.drain(ix + 1..end);
+        }
+    }
+
+    /// Read the folder again, keeping open the folders that were open.
+    pub fn refresh(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let open: Vec<PathBuf> = self
+            .rows
+            .iter()
+            .filter(|row| row.is_dir && row.open)
+            .map(|row| row.path.clone())
+            .collect();
+        self.rows = read_dir(&root, 0);
+        let mut ix = 0;
+        while ix < self.rows.len() {
+            if self.rows[ix].is_dir && open.contains(&self.rows[ix].path) {
+                self.toggle(ix);
+            }
+            ix += 1;
         }
     }
 
@@ -58,7 +84,9 @@ impl FileTree {
 
 /// The Markdown files and folders directly inside `dir`: folders first, then by name.
 pub fn read_dir(dir: &Path, depth: usize) -> Vec<Row> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut rows: Vec<Row> = entries
         .flatten()
         .filter_map(|entry| {
@@ -68,9 +96,23 @@ pub fn read_dir(dir: &Path, depth: usize) -> Vec<Row> {
             }
             // `file_type` does not follow symlinks; ask again for those so linked folders work.
             let file_type = entry.file_type().ok()?;
-            let is_dir = if file_type.is_symlink() { entry.path().is_dir() } else { file_type.is_dir() };
-            let keep = if is_dir { !IGNORED_DIRS.contains(&name.as_str()) } else { is_markdown(Path::new(&name)) };
-            keep.then(|| Row { path: entry.path(), name: name.into(), is_dir, depth, open: false })
+            let is_dir = if file_type.is_symlink() {
+                entry.path().is_dir()
+            } else {
+                file_type.is_dir()
+            };
+            let keep = if is_dir {
+                !IGNORED_DIRS.contains(&name.as_str())
+            } else {
+                is_markdown(Path::new(&name))
+            };
+            keep.then(|| Row {
+                path: entry.path(),
+                name: name.into(),
+                is_dir,
+                depth,
+                open: false,
+            })
         })
         .collect();
     rows.sort_by_cached_key(|row| (!row.is_dir, row.name.to_lowercase()));
@@ -78,12 +120,23 @@ pub fn read_dir(dir: &Path, depth: usize) -> Vec<Row> {
 }
 
 /// Build folders that are never worth walking into.
-const IGNORED_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "vendor", "__pycache__"];
+const IGNORED_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "__pycache__",
+];
 
 pub fn is_markdown(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ["md", "markdown", "mdx", "mdown", "mkd"].iter().any(|known| ext.eq_ignore_ascii_case(known)))
+        .is_some_and(|ext| {
+            ["md", "markdown", "mdx", "mdown", "mkd"]
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
 }
 
 #[cfg(test)]
@@ -95,16 +148,57 @@ mod tests {
         let root = std::env::temp_dir().join(format!("zwinmd-files-{}", std::process::id()));
         std::fs::create_dir_all(root.join("docs/deep")).unwrap();
         std::fs::create_dir_all(root.join("node_modules")).unwrap();
-        for file in ["b.md", "A.markdown", "notes.txt", ".hidden.md", "docs/one.md", "docs/deep/two.MD"] {
+        for file in [
+            "b.md",
+            "A.markdown",
+            "notes.txt",
+            ".hidden.md",
+            "docs/one.md",
+            "docs/deep/two.MD",
+        ] {
             std::fs::write(root.join(file), "x").unwrap();
         }
 
-        let mut tree = FileTree { root: Some(root.clone()), rows: read_dir(&root, 0) };
-        let names = |tree: &FileTree| tree.rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth), r.name)).collect::<Vec<_>>();
+        let mut tree = FileTree {
+            root: Some(root.clone()),
+            rows: read_dir(&root, 0),
+        };
+        let names = |tree: &FileTree| {
+            tree.rows
+                .iter()
+                .map(|r| format!("{}{}", "  ".repeat(r.depth), r.name))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(names(&tree), ["docs", "A.markdown", "b.md"]);
 
         tree.reveal(&root.join("docs/deep/two.MD"));
-        assert_eq!(names(&tree), ["docs", "  deep", "    two.MD", "  one.md", "A.markdown", "b.md"]);
+        assert_eq!(
+            names(&tree),
+            [
+                "docs",
+                "  deep",
+                "    two.MD",
+                "  one.md",
+                "A.markdown",
+                "b.md"
+            ]
+        );
+
+        // A new file shows up on refresh, and open folders stay open.
+        std::fs::write(root.join("docs/zed.md"), "x").unwrap();
+        tree.refresh();
+        assert_eq!(
+            names(&tree),
+            [
+                "docs",
+                "  deep",
+                "    two.MD",
+                "  one.md",
+                "  zed.md",
+                "A.markdown",
+                "b.md"
+            ]
+        );
 
         tree.toggle(0);
         assert_eq!(names(&tree), ["docs", "A.markdown", "b.md"]);

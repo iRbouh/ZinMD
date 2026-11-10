@@ -60,9 +60,18 @@ pub fn outline(text: &str) -> Vec<Heading> {
         }
 
         let hashes = body.bytes().take_while(|b| *b == b'#').count();
-        if (1..=6).contains(&hashes) && body[hashes..].chars().next().is_none_or(|c| c == ' ' || c == '\t') {
+        if (1..=6).contains(&hashes)
+            && body[hashes..]
+                .chars()
+                .next()
+                .is_none_or(|c| c == ' ' || c == '\t')
+        {
             let title = body[hashes..].trim().trim_end_matches('#').trim_end();
-            headings.push(Heading { level: hashes as u8, title: title.to_string().into(), line: line_ix });
+            headings.push(Heading {
+                level: hashes as u8,
+                title: title.to_string().into(),
+                line: line_ix,
+            });
             paragraph = None;
             continue;
         }
@@ -71,14 +80,22 @@ pub fn outline(text: &str) -> Vec<Heading> {
             let underline = |ch: char| !body.is_empty() && body.chars().all(|c| c == ch);
             if underline('=') || underline('-') {
                 let level = if underline('=') { 1 } else { 2 };
-                headings.push(Heading { level, title: title.trim().to_string().into(), line: title_line });
+                headings.push(Heading {
+                    level,
+                    title: title.trim().to_string().into(),
+                    line: title_line,
+                });
                 paragraph = None;
                 continue;
             }
         }
 
         let starts_block = body.is_empty() || body.starts_with(['>', '-', '*', '+', '|', '<']);
-        paragraph = if starts_block { None } else { Some((body, line_ix)) };
+        paragraph = if starts_block {
+            None
+        } else {
+            Some((body, line_ix))
+        };
     }
     headings
 }
@@ -91,7 +108,12 @@ pub struct Stats {
 
 impl Stats {
     pub fn of(text: &str) -> Self {
-        Self { words: text.split_whitespace().filter(|w| w.chars().any(char::is_alphanumeric)).count() }
+        Self {
+            words: text
+                .split_whitespace()
+                .filter(|w| w.chars().any(char::is_alphanumeric))
+                .count(),
+        }
     }
 
     /// Reading time in minutes at 220 words a minute, never less than one.
@@ -105,19 +127,32 @@ mod tests {
     use super::*;
 
     fn titles(text: &str) -> Vec<(u8, String, u32)> {
-        outline(text).into_iter().map(|h| (h.level, h.title.to_string(), h.line)).collect()
+        outline(text)
+            .into_iter()
+            .map(|h| (h.level, h.title.to_string(), h.line))
+            .collect()
     }
 
     #[test]
     fn finds_atx_headings() {
         let text = "# One\n\ntext\n\n## Two ##\n###Not a heading\n####### seven\n#\n";
-        assert_eq!(titles(text), [(1, "One".into(), 0), (2, "Two".into(), 4), (1, "".into(), 7)]);
+        assert_eq!(
+            titles(text),
+            [
+                (1, "One".into(), 0),
+                (2, "Two".into(), 4),
+                (1, "".into(), 7)
+            ]
+        );
     }
 
     #[test]
     fn skips_front_matter_and_code() {
         let text = "---\ntitle: x\n# not\n---\n# Real\n```sh\n# comment\n```\n~~~~\n# also not\n~~~\n~~~~\n    # indented\n## After\n";
-        assert_eq!(titles(text), [(1, "Real".into(), 4), (2, "After".into(), 13)]);
+        assert_eq!(
+            titles(text),
+            [(1, "Real".into(), 4), (2, "After".into(), 13)]
+        );
     }
 
     #[test]

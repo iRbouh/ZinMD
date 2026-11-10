@@ -26,25 +26,50 @@ impl Workspace {
                 file_count,
                 cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                     let p = *cx.palette();
-                    range.map(|ix| this.render_file_row(ix, &p, cx)).collect::<Vec<_>>()
+                    range
+                        .map(|ix| this.render_file_row(ix, &p, cx))
+                        .collect::<Vec<_>>()
                 }),
             )
             // As tall as its rows, giving way when the sidebar runs out of room.
             .h(ROW_HEIGHT * file_count as f32)
-            .min_h(ROW_HEIGHT * 2.)
+            .min_h(ROW_HEIGHT * file_count.min(3) as f32)
             .track_scroll(&self.tree_scroll)
             .into_any_element()
         } else {
-            let hint = if self.tree.root.is_some() { "No Markdown files here" } else { "No folder open" };
-            div().px(px(18.)).py(px(6.)).text_color(p.text_tertiary).child(hint).into_any_element()
+            let hint = if self.tree.root.is_some() {
+                "No Markdown files here"
+            } else {
+                "No folder open"
+            };
+            let (hover, strong) = (p.surface_hover, p.text_primary);
+            v_flex()
+                .flex_none()
+                .items_start()
+                .gap(px(8.))
+                .px(px(18.))
+                .py(px(6.))
+                .text_color(p.text_tertiary)
+                .child(hint)
+                .child(
+                    div()
+                        .id("open-folder")
+                        .px(px(10.))
+                        .py(px(4.))
+                        .rounded(size::RADIUS_SM)
+                        .border_1()
+                        .border_color(p.border_subtle)
+                        .bg(p.surface_raised)
+                        .text_color(p.text_secondary)
+                        .hover(move |style| style.bg(hover).text_color(strong))
+                        .child("Open…")
+                        .on_click(cx.listener(|this, _, window, cx| this.open_dialog(window, cx))),
+                )
+                .into_any_element()
         };
 
         v_flex()
-            .flex_none()
-            .w(size::SIDEBAR)
-            .h_full()
-            .border_r_1()
-            .border_color(p.border_subtle)
+            .size_full()
             .child(self.render_jump_field(&p))
             .child(
                 h_flex()
@@ -55,7 +80,13 @@ impl Workspace {
                     .pl(px(18.))
                     .pr(px(8.))
                     .child(section_label("FILES", &p))
-                    .child(icon_button("new-file", IconName::Plus, &p).size(px(22.))),
+                    .child(
+                        icon_button("new-file", IconName::Plus, &p)
+                            .size(px(22.))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_untitled(window, cx)),
+                            ),
+                    ),
             )
             .child(files)
             .child(self.render_outline(&p, cx))
@@ -88,13 +119,25 @@ impl Workspace {
             )
     }
 
-    fn render_file_row(&self, ix: usize, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_file_row(
+        &self,
+        ix: usize,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let row = &self.tree.rows[ix];
-        let selected = !row.is_dir && self.active_doc().is_some_and(|doc| doc.path.as_deref() == Some(row.path.as_path()));
+        let selected = !row.is_dir
+            && self
+                .active_doc()
+                .is_some_and(|doc| doc.path.as_deref() == Some(row.path.as_path()));
         let hover = p.surface_hover;
 
         let chevron = div().flex_none().size(px(12.)).when(row.is_dir, |slot| {
-            let icon = if row.open { IconName::ChevronDown } else { IconName::ChevronRight };
+            let icon = if row.open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            };
             slot.child(Icon::new(icon).size(px(12.)).text_color(p.text_tertiary))
         });
         let icon = match (row.is_dir, row.open) {
@@ -119,9 +162,15 @@ impl Workspace {
                     }
                 })
                 .child(chevron)
-                .child(Icon::new(icon).size(px(15.)).text_color(if selected { p.accent_hover } else { p.text_secondary }))
+                .child(Icon::new(icon).size(px(15.)).text_color(if selected {
+                    p.accent_hover
+                } else {
+                    p.text_secondary
+                }))
                 .child(div().flex_1().min_w_0().truncate().child(row.name.clone()))
-                .on_click(cx.listener(move |this, _, window, cx| this.on_tree_click(ix, window, cx))),
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.on_tree_click(ix, window, cx)),
+                ),
         )
     }
 
@@ -131,8 +180,16 @@ impl Workspace {
         };
         // The heading the caret is in: the last one at or above its line.
         let caret_line = doc.editor.read(cx).cursor_position().line;
-        let current = doc.headings.iter().rposition(|heading| heading.line <= caret_line);
-        let top_level = doc.headings.iter().map(|heading| heading.level).min().unwrap_or(1);
+        let current = doc
+            .headings
+            .iter()
+            .rposition(|heading| heading.line <= caret_line);
+        let top_level = doc
+            .headings
+            .iter()
+            .map(|heading| heading.level)
+            .min()
+            .unwrap_or(1);
         let (hover, strong) = (p.surface_hover, p.text_primary);
 
         let rows = doc.headings.iter().enumerate().map(|(ix, heading)| {
@@ -160,8 +217,16 @@ impl Workspace {
                             .hover(move |style| style.bg(hover).text_color(strong))
                     }
                 })
-                .child(div().flex_1().min_w_0().truncate().child(heading.title.clone()))
-                .on_click(cx.listener(move |this, _, window, cx| this.jump_to_line(line, window, cx)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(heading.title.clone()),
+                )
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.jump_to_line(line, window, cx)),
+                )
         });
 
         div()
@@ -169,7 +234,22 @@ impl Workspace {
             .max_h(relative(0.5))
             .flex()
             .flex_col()
-            .child(h_flex().flex_none().h(px(28.)).mt(px(10.)).pl(px(18.)).child(section_label("OUTLINE", p)))
-            .child(div().id("outline").flex_1().min_h_0().overflow_y_scroll().pb(px(10.)).children(rows))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .h(px(28.))
+                    .mt(px(10.))
+                    .pl(px(18.))
+                    .child(section_label("OUTLINE", p)),
+            )
+            .child(
+                div()
+                    .id("outline")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .pb(px(10.))
+                    .children(rows),
+            )
     }
 }
