@@ -46,6 +46,16 @@ pub fn warm_up_graphics() {
     }
 }
 
+/// Say what is going on, when `ZWINMD_TRACE` is set. For checking behaviour
+/// that cannot be seen from outside, such as requests from the system.
+pub fn trace(message: impl FnOnce() -> String) {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("ZWINMD_TRACE").is_some());
+    if *ON {
+        eprintln!("zwinmd: {}", message());
+    }
+}
+
 /// Record that startup reached `stage`.
 pub fn mark(stage: &'static str) {
     if !enabled() {

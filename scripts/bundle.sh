@@ -15,6 +15,7 @@ app="target/ZwinMD.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "target/$profile/zwinmd" "$app/Contents/MacOS/ZwinMD"
+cp assets/ZwinMD.icns "$app/Contents/Resources/ZwinMD.icns"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -25,6 +26,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>ZwinMD</string>
     <key>CFBundleIdentifier</key><string>app.zwinmd.ZwinMD</string>
     <key>CFBundleExecutable</key><string>ZwinMD</string>
+    <key>CFBundleIconFile</key><string>ZwinMD</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleVersion</key><string>$version</string>
@@ -39,6 +41,15 @@ cat > "$app/Contents/Info.plist" <<PLIST
             <key>LSHandlerRank</key><string>Alternate</string>
             <key>LSItemContentTypes</key>
             <array><string>net.daringfireball.markdown</string><string>public.plain-text</string></array>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>md</string><string>markdown</string><string>mdx</string><string>mdown</string><string>mkd</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Folder</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>None</string>
+            <key>LSItemContentTypes</key>
+            <array><string>public.folder</string></array>
         </dict>
     </array>
 </dict>

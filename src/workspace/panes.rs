@@ -324,7 +324,7 @@ impl Workspace {
 
         // Otherwise it is a path, relative to the document it is written in.
         let (path, anchor) = url.split_once('#').unwrap_or((url, ""));
-        let path = PathBuf::from(percent_decode(path));
+        let path = PathBuf::from(crate::open::percent_decode(path));
         let folder = self
             .active_doc()
             .and_then(|doc| doc.path.as_deref())
@@ -345,7 +345,7 @@ impl Workspace {
 
     /// Go to the heading a `#anchor` link names.
     fn jump_to_anchor(&mut self, anchor: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let anchor = percent_decode(anchor).to_lowercase();
+        let anchor = crate::open::percent_decode(anchor).to_lowercase();
         let line = self
             .active_doc()
             .and_then(|doc| {
@@ -357,43 +357,5 @@ impl Workspace {
         if let Some(line) = line {
             self.jump_to_line(line, window, cx);
         }
-    }
-}
-
-/// Turn `%20` and friends in a link back into the characters they stand for.
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut ix = 0;
-    while ix < bytes.len() {
-        let hex = (bytes[ix] == b'%')
-            .then(|| text.get(ix + 1..ix + 3))
-            .flatten();
-        match hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
-            Some(byte) => {
-                decoded.push(byte);
-                ix += 3;
-            }
-            None => {
-                decoded.push(bytes[ix]);
-                ix += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&decoded).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::percent_decode;
-
-    #[test]
-    fn decodes_percent_escapes() {
-        assert_eq!(
-            percent_decode("my%20notes/caf%C3%A9.md"),
-            "my notes/café.md"
-        );
-        assert_eq!(percent_decode("100%"), "100%");
-        assert_eq!(percent_decode("a%zzb"), "a%zzb");
     }
 }

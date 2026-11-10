@@ -310,6 +310,23 @@ impl Workspace {
 
     // ------------------------------------------------------------ documents
 
+    /// Open what the system, or a drop on the window, asked for, and come to the front.
+    pub fn open_requested(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        for path in paths {
+            self.open(path, window, cx);
+        }
+        window.activate_window();
+        cx.activate(true);
+    }
+
     /// Open a file in a tab, or show a folder in the sidebar.
     fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let path = path.canonicalize().unwrap_or(path);
@@ -457,6 +474,18 @@ impl Workspace {
             self.switches += 1;
         }
         self.active = ix;
+        // Not drawn in our own title bar, but it names the window in Mission
+        // Control, the Window menu and to assistive tools.
+        window.set_window_title(&self.docs[ix].name);
+        startup::trace(|| {
+            format!(
+                "showing {:?}",
+                self.docs[ix]
+                    .path
+                    .as_deref()
+                    .unwrap_or(Path::new("untitled"))
+            )
+        });
         self.docs[ix]
             .editor
             .update(cx, |editor, cx| editor.focus(window, cx));
@@ -1127,6 +1156,9 @@ impl Render for Workspace {
                 this.update_settings(|s| s.font = EditorFont::Menlo, cx)
             }))
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.quit(window, cx)))
+            .on_drop(cx.listener(|this, dropped: &ExternalPaths, window, cx| {
+                this.open_requested(dropped.paths().to_vec(), window, cx);
+            }))
             .on_drag_move::<DragSidebar>(cx.listener(
                 |this, drag: &DragMoveEvent<DragSidebar>, _, cx| {
                     this.sidebar_width = drag.event.position.x.clamp(px(180.), px(480.));

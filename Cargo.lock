@@ -10077,6 +10077,7 @@ name = "zwinmd"
 version = "0.1.0"
 dependencies = [
  "data-url",
+ "futures",
  "gpui-kit",
  "gpui-pre",
  "gpui-pre-platform",

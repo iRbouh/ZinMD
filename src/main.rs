@@ -10,6 +10,7 @@ mod doc;
 mod export;
 mod files;
 mod motion;
+mod open;
 mod preview;
 mod settings;
 #[cfg(feature = "shot")]
@@ -33,6 +34,7 @@ fn main() {
     let path = std::env::args_os().nth(1).map(PathBuf::from);
 
     let app = gpui_kit::application().with_assets(assets::AppAssets);
+    let mut requests = open::listen(&app);
     startup::mark("application created");
     app.run(move |cx| {
         startup::mark("event loop running");
@@ -82,14 +84,39 @@ fn main() {
             inactive_frame_interval: None,
             ..Default::default()
         };
-        let (_window, _workspace) = gpui_kit::open_window(options, cx, |window, cx| {
+        // A file double-clicked in Finder arrives as a request, not an argument.
+        // If it is already here, open straight into it.
+        let mut asked = requests.take_ready().into_iter();
+        let path = path.or_else(|| asked.next());
+        let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
             startup::mark("native window created");
             cx.new(|cx| Workspace::new(path, started, window, cx))
         })
         .expect("failed to open the main window");
         startup::mark("window opened");
 
+        // Everything else that was asked for, and whatever is asked for later.
+        let rest: Vec<PathBuf> = asked.collect();
+        let opener = workspace.downgrade();
+        cx.spawn(async move |cx| {
+            let mut paths = Some(rest);
+            while let Some(batch) = paths.take() {
+                let opened = cx.update_window(window, |_, window, cx| {
+                    opener
+                        .update(cx, |workspace, cx| {
+                            workspace.open_requested(batch, window, cx)
+                        })
+                        .is_ok()
+                });
+                if !matches!(opened, Ok(true)) {
+                    break;
+                }
+                paths = requests.next().await;
+            }
+        })
+        .detach();
+
         #[cfg(feature = "shot")]
-        shot::after_first_frame(_window, _workspace, cx);
+        shot::after_first_frame(window, workspace, cx);
     });
 }

@@ -19,6 +19,8 @@ serde_json = "1"
 markdown = "1.0.0"
 # Decodes images embedded in a document as `data:` links.
 data-url = "0.3"
+# Channels between the system's callbacks and the app.
+futures = "0.3"
 
 # Only for the `shot` feature: lets the app save a picture of its own window.
 # Listed under other names so they never shadow `gpui_kit::*` in our code.
