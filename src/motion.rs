@@ -4,7 +4,7 @@
 //! Movement is short, so it reads as response rather than as animation, and
 //! the kit drops it altogether when the system asks for reduced motion.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::base::Transition;
 use gpui_kit::base::animation::cubic_bezier;
@@ -16,6 +16,18 @@ use crate::theme::Palette;
 pub const QUICK: Duration = Duration::from_millis(160);
 /// Whole panels: the sidebar, the panes.
 pub const PANEL: Duration = Duration::from_millis(240);
+
+/// Hover colour fading in and out.
+pub const HOVER: Duration = Duration::from_millis(120);
+
+/// How far along something is that began at `started` and takes `duration`:
+/// 0 to 1, eased. Already 1 when the system asks for reduced motion.
+pub fn progress(started: Instant, duration: Duration, cx: &App) -> f32 {
+    if cx.reduce_motion() {
+        return 1.;
+    }
+    ease((started.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.))
+}
 
 /// The curve everything moves on.
 pub fn ease(t: f32) -> f32 {

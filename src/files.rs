@@ -48,6 +48,21 @@ impl FileTree {
         }
     }
 
+    /// The rows listed under the folder at `ix`. Empty for a closed folder or a file.
+    pub fn descendants(&self, ix: usize) -> std::ops::Range<usize> {
+        let Some(row) = self.rows.get(ix) else {
+            return 0..0;
+        };
+        let depth = row.depth;
+        let after = &self.rows[ix + 1..];
+        ix + 1
+            ..ix + 1
+                + after
+                    .iter()
+                    .position(|row| row.depth <= depth)
+                    .unwrap_or(after.len())
+    }
+
     /// Read the folder again, keeping open the folders that were open.
     pub fn refresh(&mut self) {
         let Some(root) = self.root.clone() else {
@@ -200,7 +215,13 @@ mod tests {
             ]
         );
 
+        // "docs" holds three rows, "deep" one, and a file none.
+        assert_eq!(tree.descendants(0), 1..5);
+        assert_eq!(tree.descendants(1), 2..3);
+        assert_eq!(tree.descendants(2), 3..3);
+
         tree.toggle(0);
+        assert_eq!(tree.descendants(0), 1..1);
         assert_eq!(names(&tree), ["docs", "A.markdown", "b.md"]);
         std::fs::remove_dir_all(&root).unwrap();
     }

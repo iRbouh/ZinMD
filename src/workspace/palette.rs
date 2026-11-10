@@ -125,7 +125,9 @@ impl Workspace {
     }
 
     pub(super) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette.take().is_some() {
+        if let Some(palette) = self.palette.take() {
+            // It stays on screen a moment longer, fading, with nothing left to click.
+            self.palette_leaving = Some((palette, std::time::Instant::now()));
             // Typing goes back to the document.
             if let Some(doc) = self.active_doc() {
                 doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
@@ -149,10 +151,28 @@ impl Workspace {
 
     /// The palette floating over the window, when it is open.
     pub(super) fn render_palette(
-        &self,
+        &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
-        let palette = self.palette.as_ref()?;
+        // A palette that was just closed is drawn a little longer, fading away.
+        let leaving = self.palette.is_none();
+        let fade = match &self.palette_leaving {
+            Some((_, since)) if leaving => {
+                1. - crate::motion::progress(*since, crate::motion::HOVER, cx)
+            }
+            _ => 1.,
+        };
+        if leaving && fade <= 0. {
+            self.palette_leaving = None;
+        }
+        let palette = match &self.palette {
+            Some(palette) => palette,
+            None => &self.palette_leaving.as_ref()?.0,
+        };
+        if leaving {
+            window.request_animation_frame();
+        }
         let p = *cx.palette();
         let (confirm, cancel, dismiss) = (cx.weak_entity(), cx.weak_entity(), cx.weak_entity());
 
@@ -183,6 +203,7 @@ impl Workspace {
         Some(
             div()
                 .id("palette-backdrop")
+                .opacity(fade)
                 .absolute()
                 .inset_0()
                 .flex()
@@ -210,9 +231,15 @@ impl Workspace {
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(command)
                         // It arrives: fades in while settling down the last few points.
+                        // With reduced motion the animation is over as it starts.
                         .with_animation(
                             "palette-arrives",
-                            Animation::new(crate::motion::QUICK).with_easing(crate::motion::ease),
+                            Animation::new(if cx.reduce_motion() {
+                                std::time::Duration::from_millis(1)
+                            } else {
+                                crate::motion::QUICK
+                            })
+                            .with_easing(crate::motion::ease),
                             |panel, progress| {
                                 panel.opacity(progress).mt(px(-10.) * (1. - progress))
                             },

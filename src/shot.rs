@@ -8,15 +8,15 @@
 
 use std::time::Duration;
 
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::ThemeMode;
 use gpui_kit::*;
 
 use crate::workspace::Workspace;
 
 pub fn window_size(cx: &mut App) -> Size<Pixels> {
     match std::env::var("ZWINMD_THEME").as_deref() {
-        Ok("dark") => Theme::change(ThemeMode::Dark, None, cx),
-        Ok("light") => Theme::change(ThemeMode::Light, None, cx),
+        Ok("dark") => crate::theme::set_mode(ThemeMode::Dark, false, cx),
+        Ok("light") => crate::theme::set_mode(ThemeMode::Light, false, cx),
         _ => {}
     }
     std::env::var("ZWINMD_SIZE")

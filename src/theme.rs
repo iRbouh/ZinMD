@@ -6,6 +6,7 @@
 //! kit, so its editor, scrollbars and popovers match without a second colour list.
 
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode};
 use gpui_kit::*;
@@ -90,6 +91,11 @@ macro_rules! palette {
             pub fn dark() -> Self {
                 Self { $($name: $dark,)* }
             }
+
+            /// The palette `progress` of the way from `from` to `to`.
+            fn between(from: &Self, to: &Self, progress: f32) -> Self {
+                Self { $($name: blend(from.$name, to.$name, progress),)* }
+            }
         }
     };
 }
@@ -173,7 +179,19 @@ pub mod size {
 struct Palettes {
     light: Palette,
     dark: Palette,
+    /// What is on screen now: one of the two, or a blend while fading between them.
+    current: Palette,
+    fade: Option<Fade>,
 }
+
+/// A switch of appearance in progress.
+struct Fade {
+    from: Palette,
+    started: Instant,
+}
+
+/// How long switching between light and dark takes.
+const FADE: Duration = Duration::from_millis(220);
 
 impl Global for Palettes {}
 
@@ -184,13 +202,22 @@ pub trait ActivePalette {
 
 impl ActivePalette for App {
     fn palette(&self) -> &Palette {
-        let palettes = self.global::<Palettes>();
-        if self.theme().is_dark() {
-            &palettes.dark
-        } else {
-            &palettes.light
-        }
+        &self.global::<Palettes>().current
     }
+}
+
+/// A colour between two others, mixed channel by channel so it never takes a
+/// detour through other hues.
+fn blend(from: Hsla, to: Hsla, progress: f32) -> Hsla {
+    let (from, to) = (Rgba::from(from), Rgba::from(to));
+    let mix = |from: f32, to: f32| from + (to - from) * progress;
+    Rgba {
+        r: mix(from.r, to.r),
+        g: mix(from.g, to.g),
+        b: mix(from.b, to.b),
+        a: mix(from.a, to.a),
+    }
+    .into()
 }
 
 /// The interface font, by the name the OS itself uses for it.
@@ -213,7 +240,12 @@ pub fn install(settings: &Settings, cx: &mut App) {
     theme.light_theme = Rc::new(kit_config(&light, ThemeMode::Light, settings));
     theme.dark_theme = Rc::new(kit_config(&dark, ThemeMode::Dark, settings));
     cx.set_global(theme);
-    cx.set_global(Palettes { light, dark });
+    cx.set_global(Palettes {
+        light,
+        dark,
+        current: light,
+        fade: None,
+    });
 }
 
 /// Use another editor font or size, in every open window, at once.
@@ -239,18 +271,55 @@ pub fn set_editor_font(settings: &Settings, cx: &mut App) {
 pub fn follow_system(cx: &mut App) {
     let mode = ThemeMode::from(cx.window_appearance());
     if mode.is_dark() {
-        Theme::change(mode, None, cx);
+        set_mode(mode, false, cx);
     }
 }
 
-/// Flip between light and dark.
+/// Flip between light and dark, fading from one to the other.
 pub fn toggle(cx: &mut App) {
     let mode = if cx.theme().is_dark() {
         ThemeMode::Light
     } else {
         ThemeMode::Dark
     };
+    set_mode(mode, true, cx);
+}
+
+/// Switch appearance. With `fade`, our own surfaces blend over to the new
+/// colours; text switches at once, which keeps it readable throughout.
+pub fn set_mode(mode: ThemeMode, fade: bool, cx: &mut App) {
+    let fade = fade && !cx.reduce_motion();
+    let palettes = cx.global_mut::<Palettes>();
+    let target = if mode.is_dark() {
+        palettes.dark
+    } else {
+        palettes.light
+    };
+    palettes.fade = fade.then(|| Fade {
+        from: palettes.current,
+        started: Instant::now(),
+    });
+    if !fade {
+        palettes.current = target;
+    }
     Theme::change(mode, None, cx);
+}
+
+/// Move a fade between appearances one frame on. Call once per frame, before
+/// anything reads the palette.
+pub fn tick(window: &mut Window, cx: &mut App) {
+    let dark = cx.theme().is_dark();
+    let palettes = cx.global_mut::<Palettes>();
+    let Some(fade) = &palettes.fade else { return };
+    let target = if dark { palettes.dark } else { palettes.light };
+    let progress = fade.started.elapsed().as_secs_f32() / FADE.as_secs_f32();
+    if progress >= 1. {
+        palettes.current = target;
+        palettes.fade = None;
+    } else {
+        palettes.current = Palette::between(&fade.from, &target, crate::motion::ease(progress));
+        window.request_animation_frame();
+    }
 }
 
 fn hex(color: Hsla) -> String {
@@ -269,7 +338,13 @@ fn hex(color: Hsla) -> String {
 fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig {
     let dark = mode.is_dark();
     // The current line in the editor: one small step away from the editor surface.
-    let active_line = if dark { c(0x22211D) } else { c(0xF3F0EA) };
+    // A veil rather than a colour, so it sits right on the editor surface
+    // whatever that is, including midway through a fade between appearances.
+    let active_line = if dark {
+        a(0xFFFFFF, 0.035)
+    } else {
+        a(0x000000, 0.035)
+    };
     let clear = hex(a(0x000000, 0.));
     let style = |color: Hsla| serde_json::json!({ "color": hex(color) });
     let italic = |color: Hsla| serde_json::json!({ "color": hex(color), "font_style": "italic" });
@@ -370,7 +445,11 @@ fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig 
         },
         "highlight": {
             "editor.foreground": hex(p.text_primary),
-            "editor.background": hex(p.surface_editor),
+            // The pane behind the editor paints the surface, so it can fade.
+            "editor.background": clear,
+            // Lines wrap rather than scroll sideways, so nothing runs under the
+            // line numbers and they need no backing of their own.
+            "editor.gutter.background": clear,
             "editor.active_line.background": hex(active_line),
             "editor.line_number": hex(p.text_disabled),
             "editor.active_line_number": hex(p.text_primary),

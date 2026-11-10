@@ -1,6 +1,7 @@
 //! The main window: open documents, the layout around them, and the commands
 //! that change either. Each strip of the window draws itself in a submodule.
 
+mod hover;
 mod palette;
 mod panes;
 mod sidebar;
@@ -26,6 +27,7 @@ use crate::settings::{self, EditorFont, Settings};
 use crate::startup;
 use crate::sync::{ScrollSync, Side};
 use crate::theme::{self, ActivePalette as _, size};
+use crate::ui;
 
 actions!(
     zwinmd,
@@ -159,6 +161,9 @@ pub struct Doc {
     /// Which source lines each preview row shows; rebuilt in the background after edits.
     blocks: BlockMap,
     sync: ScrollSync,
+    /// How wide its tab is, and when the tab was opened if it should grow in.
+    tab_width: Pixels,
+    born: Option<Instant>,
     _changes: Subscription,
     _blocks: Task<()>,
 }
@@ -177,10 +182,20 @@ pub struct Workspace {
     sidebar_open: bool,
     sync_enabled: bool,
     tree: FileTree,
-    tree_scroll: UniformListScrollHandle,
+    tree_scroll: ScrollHandle,
+    /// A folder of the file list sliding open or shut.
+    tree_motion: Option<sidebar::TreeMotion>,
+    /// What the pointer is over, for hover that fades.
+    hot: Option<hover::Hot>,
+    /// Closed tabs still shrinking out of the tab strip.
+    ghost_tabs: Vec<titlebar::GhostTab>,
+    /// Counts changes of the document on show, so each one can fade in.
+    switches: usize,
     /// Every Markdown file under the open folder, for the command palette.
     file_index: Vec<PathBuf>,
     palette: Option<palette::CommandPalette>,
+    /// The palette just closed, fading out, and when it closed.
+    palette_leaving: Option<(palette::CommandPalette, Instant)>,
     /// How wide the sidebar is when open; dragging its edge changes this.
     sidebar_width: Pixels,
     /// The editor's share of the document area in split view.
@@ -217,9 +232,14 @@ impl Workspace {
             sidebar_open: true,
             sync_enabled: true,
             tree: FileTree::default(),
-            tree_scroll: UniformListScrollHandle::new(),
+            tree_scroll: ScrollHandle::new(),
+            tree_motion: None,
+            hot: None,
+            ghost_tabs: Vec::new(),
+            switches: 0,
             file_index: Vec::new(),
             palette: None,
+            palette_leaving: None,
             sidebar_width: size::SIDEBAR,
             split: 0.5,
             glide: None,
@@ -361,6 +381,12 @@ impl Workspace {
         });
         let id = self.next_doc_id;
         self.next_doc_id += 1;
+        let tab_width = titlebar::tab_width(ui::text_width(
+            &name,
+            size::FONT_UI,
+            FontWeight::MEDIUM,
+            window,
+        ));
         self.docs.push(Doc {
             id,
             path,
@@ -373,6 +399,9 @@ impl Workspace {
             text,
             blocks: BlockMap::default(),
             sync: ScrollSync::default(),
+            tab_width,
+            // The tab the window opens with is simply there; later ones grow in.
+            born: (!self.docs.is_empty()).then(Instant::now),
             _changes: changes,
             _blocks: Task::ready(()),
         });
@@ -423,6 +452,9 @@ impl Workspace {
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.docs.len() {
             return;
+        }
+        if self.active != ix && self.docs.len() > 1 {
+            self.switches += 1;
         }
         self.active = ix;
         self.docs[ix]
@@ -490,6 +522,12 @@ impl Workspace {
                     .unwrap_or_default()
                     .into();
                 doc.path = Some(path.clone());
+                doc.tab_width = titlebar::tab_width(ui::text_width(
+                    &doc.name,
+                    size::FONT_UI,
+                    FontWeight::MEDIUM,
+                    window,
+                ));
                 let saved = this.write_doc(ix, window, cx);
                 // The new file may belong in the sidebar.
                 match this.tree.root {
@@ -566,7 +604,20 @@ impl Workspace {
 
     fn close_doc(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.doc_ix(id) else { return };
-        self.docs.remove(ix);
+        let closed = self.docs.remove(ix);
+        // Ghosts are placed by where they were among the open tabs; keep that true.
+        for ghost in &mut self.ghost_tabs {
+            if ghost.at > ix {
+                ghost.at -= 1;
+            }
+        }
+        self.ghost_tabs.push(titlebar::GhostTab {
+            at: ix,
+            name: closed.name.clone(),
+            width: closed.tab_width,
+            closed: Instant::now(),
+        });
+        self.switches += 1;
         if self.docs.is_empty() {
             self.close_confirmed = true;
             window.remove_window();
@@ -755,8 +806,7 @@ impl Workspace {
             return;
         };
         if row.is_dir {
-            self.tree.toggle(ix);
-            cx.notify();
+            self.toggle_folder(ix, cx);
         } else {
             let path = row.path.clone();
             self.open_path(&path, window, cx);
@@ -807,23 +857,25 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Say how smoothly the last script step was drawn: how many frames it took
-    /// and the longest wait between two of them while it was moving.
+    /// Say how smoothly the last script step was drawn. An animation shows up
+    /// as an unbroken run of frames right after the step: this reports how
+    /// long that run lasted and the longest wait inside it. A run much shorter
+    /// than the animation means it stalled partway.
     #[cfg(feature = "shot")]
     pub fn report_frames(&mut self) {
         let frames = std::mem::take(&mut self.frames);
-        // Frames further apart than this are separate bursts of activity, not a stutter.
         let gaps: Vec<f64> = frames
             .windows(2)
             .map(|pair| pair[1].duration_since(pair[0]).as_secs_f64() * 1000.)
-            .filter(|gap| *gap < 100.)
             .collect();
-        if gaps.len() >= 3 {
-            let longest = gaps.iter().cloned().fold(0., f64::max);
-            let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+        // The run ends at the first pause too long to be part of an animation.
+        let run: Vec<f64> = gaps.iter().copied().take_while(|gap| *gap < 30.).collect();
+        if run.len() >= 3 {
+            let longest = run.iter().copied().fold(0., f64::max);
+            let span: f64 = run.iter().sum();
             eprintln!(
-                "  drew {} frames, {mean:.1} ms apart on average, longest gap {longest:.1} ms",
-                gaps.len() + 1
+                "  ran {span:.0} ms in {} frames, longest wait {longest:.1} ms",
+                run.len() + 1
             );
         }
     }
@@ -832,7 +884,9 @@ impl Workspace {
     /// `editor:<px>` and `preview:<px>` scroll a pane, `type:<text>` types at the
     /// caret, `line:<n>` moves the caret, `view:editor|split|preview`, `sidebar`,
     /// `sync`, `new`, `open:<path>`, `save` and `close` run those commands,
-    /// `link:<url>` follows a link and `check:<n>` clicks the n-th task checkbox.
+    /// `link:<url>` follows a link, `check:<n>` clicks the n-th task checkbox,
+    /// `tree:<n>` clicks the n-th row of the file list, `palette` and `theme`
+    /// toggle those, `font:<name>` and `size:<n>` set the editor font.
     #[cfg(feature = "shot")]
     pub fn debug_step(&mut self, step: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.report_frames();
@@ -891,7 +945,12 @@ impl Workspace {
             "open" => self.open(PathBuf::from(argument), window, cx),
             "save" => self.save_doc(id, false, window, cx).detach(),
             "close" => self.request_close(self.active, window, cx),
-            "palette" => self.open_palette(window, cx),
+            "palette" => match self.palette {
+                Some(_) => self.close_palette(window, cx),
+                None => self.open_palette(window, cx),
+            },
+            "tree" => self.on_tree_click(argument.parse().unwrap_or(0), window, cx),
+            "theme" => theme::toggle(cx),
             "font" => {
                 let font = EditorFont::ALL
                     .into_iter()
@@ -961,6 +1020,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.time_first_frame(window, cx);
+        theme::tick(window, cx);
         #[cfg(feature = "shot")]
         self.frames.push(Instant::now());
         self.sync_scroll(window, cx);
@@ -995,11 +1055,11 @@ impl Render for Workspace {
 
         let titlebar = self.render_titlebar(window, cx);
         // The sidebar is kept drawn even when shut, so opening it has nothing to build.
-        let sidebar = self.render_sidebar(cx);
+        let sidebar = self.render_sidebar(window, cx);
         let panes_target = (window.viewport_size().width - sidebar_target, share_target);
         let panes = self.render_panes(panes_width, share, panes_target, cx);
         let statusbar = self.render_statusbar(cx);
-        let palette = self.render_palette(cx);
+        let palette = self.render_palette(window, cx);
         let full_sidebar = self.sidebar_width;
         let sidebar_handle = (self.sidebar_open && sidebar_width == full_sidebar)
             .then(|| motion::resize_handle("sidebar-handle", sidebar_width, DragSidebar, &p));
@@ -1115,7 +1175,26 @@ impl Render for Workspace {
                                     .child(sidebar),
                             ),
                     )
-                    .child(div().flex_1().min_w_0().h_full().child(panes))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(match self.switches {
+                                0 => panes,
+                                _ if cx.reduce_motion() => panes,
+                                // A document coming on show fades up, rather than cutting in.
+                                switches => div()
+                                    .size_full()
+                                    .child(panes)
+                                    .with_animation(
+                                        ("document-arrives", switches),
+                                        Animation::new(motion::QUICK).with_easing(motion::ease),
+                                        |pane, progress| pane.opacity(0.3 + 0.7 * progress),
+                                    )
+                                    .into_any_element(),
+                            }),
+                    )
                     .children(sidebar_handle),
             )
             .child(statusbar)

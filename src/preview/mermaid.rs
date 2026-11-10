@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::text::{
@@ -32,7 +33,9 @@ struct Picture {
 
 enum Entry {
     Drawing,
-    Ready(Picture),
+    /// The picture, and when it arrived if it is the first one drawn at its
+    /// spot: a first picture fades in, an edited one simply replaces the last.
+    Ready(Picture, Option<Instant>),
     Failed(SharedString),
 }
 
@@ -97,7 +100,7 @@ impl MarkdownPlugin for Mermaid {
         )
     }
 
-    fn render(&self, node: &MarkdownNode, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = *cx.palette();
         let frame = div()
             .w_full()
@@ -120,7 +123,15 @@ impl MarkdownPlugin for Mermaid {
         let diagrams = cx.global::<Diagrams>();
         let previous = diagrams.latest.get(&source.start).cloned();
         match diagrams.entries.get(&key) {
-            Some(Entry::Ready(picture)) => frame.child(picture.element(previous)),
+            Some(Entry::Ready(picture, arrived)) => {
+                let shown = arrived.map_or(1., |arrived| {
+                    crate::motion::progress(arrived, crate::motion::PANEL, cx)
+                });
+                if shown < 1. {
+                    window.request_animation_frame();
+                }
+                frame.child(picture.element(previous).opacity(shown))
+            }
             Some(Entry::Failed(error)) => frame
                 // Keep the last good picture in view while the source is mid-edit.
                 .children(previous.map(|picture| picture.element(None).opacity(0.45)))
@@ -187,8 +198,8 @@ fn draw_in_background(source: &Source, key: Key, p: &Palette, cx: &mut App) {
             let diagrams = cx.global_mut::<Diagrams>();
             let entry = match drawn {
                 Ok(picture) => {
-                    diagrams.latest.insert(start, picture.clone());
-                    Entry::Ready(picture)
+                    let first = diagrams.latest.insert(start, picture.clone()).is_none();
+                    Entry::Ready(picture, first.then(Instant::now))
                 }
                 Err(error) => Entry::Failed(error.into()),
             };
