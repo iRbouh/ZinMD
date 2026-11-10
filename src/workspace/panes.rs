@@ -3,26 +3,96 @@
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
+use gpui_kit::base::animation::ease_out_cubic;
 use gpui_kit::component::clipboard::Clipboard;
-use gpui_kit::component::input::Editor;
-use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::input::{Editor, Position};
 use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::{Doc, ViewMode, Workspace};
 use crate::theme::{ActivePalette as _, Palette, size};
-use crate::{doc, files, preview};
+use crate::{doc, files, motion, preview};
 
 /// Widest the text column of the preview gets, for comfortable line lengths.
 const PREVIEW_COLUMN: Pixels = px(760.);
 /// Clear space above the preview text.
 const PREVIEW_TOP: Pixels = px(28.);
+/// Narrowest a pane's text is laid out. A pane sliding shut is clipped below
+/// this instead of re-wrapping its text into a sliver on every frame.
+const PANE_MIN: Pixels = px(280.);
+/// Past this many bytes a document counts as long: slow enough to wrap that
+/// doing it on every frame of an animation would make the animation stutter.
+const LONG_DOCUMENT: usize = 30_000;
+/// How long the editor takes to glide to a line it was asked to jump to.
+const GLIDE: Duration = Duration::from_millis(260);
+
+/// The editor scrolling smoothly to a place, rather than cutting to it.
+pub(super) struct Glide {
+    doc: usize,
+    from: Pixels,
+    to: Pixels,
+    started: Instant,
+}
+
+/// What dragging the divider between the editor and the preview carries.
+pub(super) struct DragSplit;
 
 impl Workspace {
+    /// Put the caret on a source line and glide there.
+    pub(super) fn jump_to_line(&mut self, line: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc() else { return };
+        let id = doc.id;
+        let glide = doc.editor.update(cx, |editor, cx| {
+            let from = editor.scroll_offset();
+            // One line of context above the target, when there is one.
+            let to = editor.line_height().map(|line_height| {
+                let row = editor
+                    .display_map()
+                    .buffer_line_to_display_row(line as usize);
+                -(line_height * row.saturating_sub(1) as f32)
+            });
+            editor.set_cursor_position(Position::new(line, 0), window, cx);
+            editor.focus(window, cx);
+            let to = to.filter(|_| !cx.reduce_motion())?;
+            // Moving the caret jumps the view to it; start from where we were instead.
+            editor.set_scroll_offset(from, cx);
+            Some(Glide {
+                doc: id,
+                from: from.y,
+                to,
+                started: Instant::now(),
+            })
+        });
+        self.glide = glide;
+        cx.notify();
+    }
+
+    /// Move a glide in progress one frame on.
+    fn advance_glide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(glide) = &self.glide else { return };
+        let Some(doc) = self.active_doc().filter(|doc| doc.id == glide.doc) else {
+            self.glide = None;
+            return;
+        };
+        let progress = (glide.started.elapsed().as_secs_f32() / GLIDE.as_secs_f32()).min(1.);
+        let y = glide.from + (glide.to - glide.from) * ease_out_cubic(progress);
+        doc.editor.update(cx, |editor, cx| {
+            let x = editor.scroll_offset().x;
+            editor.set_scroll_offset(point(x, y), cx);
+        });
+        if progress >= 1. {
+            self.glide = None;
+        } else {
+            window.request_animation_frame();
+        }
+    }
+
     /// Keep the two panes on the same part of the document.
     pub(super) fn sync_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.advance_glide(window, cx);
         if !self.sync_enabled || self.view != ViewMode::Split {
             return;
         }
@@ -34,63 +104,95 @@ impl Workspace {
         }
     }
 
-    /// How wide the preview pane is, to centre its text column.
-    fn preview_width(&self, window: &Window, cx: &App) -> Pixels {
-        let sidebar = match self.sidebar_open {
-            true => self
-                .sidebar_split
-                .read(cx)
-                .sizes()
-                .first()
-                .copied()
-                .unwrap_or(size::SIDEBAR),
-            false => px(0.),
-        };
-        let area = window.viewport_size().width - sidebar;
-        match self.view {
-            ViewMode::Split => self
-                .pane_split
-                .read(cx)
-                .sizes()
-                .get(1)
-                .copied()
-                .unwrap_or(area / 2.),
-            _ => area,
-        }
-    }
-
+    /// The editor and the preview, side by side in `width`. The editor takes
+    /// `share` of it: 1 in editor view, 0 in preview view, and on its way
+    /// between the two while the view is changing.
+    ///
+    /// `target` is the width and share they are heading for.
     pub(super) fn render_panes(
         &mut self,
-        window: &mut Window,
+        width: Pixels,
+        share: f32,
+        target: (Pixels, f32),
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = *cx.palette();
+        let editor_width = width * share;
+        let preview_width = width - editor_width;
+        let (show_editor, show_preview) = (share > 0.001, share < 0.999);
+
+        // The widths the text is wrapped to. For most documents that is simply
+        // the width of the pane, every frame. Wrapping a long document again
+        // takes several frames' worth of time, so while its panes are moving
+        // the text is held as it was and wrapped once, on arrival.
+        let moving = (width, share) != target || cx.has_active_drag();
+        let long = self
+            .active_doc()
+            .is_some_and(|doc| doc.text.len() > LONG_DOCUMENT);
+        let (editor_text, preview_text) = if moving && long {
+            let held =
+                |held: Pixels, arriving: Pixels| if held >= PANE_MIN { held } else { arriving };
+            let arriving = target.0 * target.1;
+            (
+                held(self.settled.0, arriving),
+                held(self.settled.1, target.0 - arriving),
+            )
+        } else {
+            (editor_width, preview_width)
+        };
+        if !moving {
+            self.settled = (editor_width, preview_width);
+        }
         let Some(doc) = self.active_doc() else {
             return div().into_any_element();
         };
 
-        let editor = div().size_full().bg(p.surface_editor).child(
-            Editor::new(&doc.editor)
-                .appearance(false)
-                .bordered(false)
-                .h_full(),
-        );
-        let preview = self.render_preview(doc, self.preview_width(window, cx), &p, cx);
+        let editor = show_editor.then(|| {
+            div()
+                .flex_none()
+                .h_full()
+                .w(editor_width)
+                .overflow_hidden()
+                .bg(p.surface_editor)
+                .child(
+                    div().h_full().w(editor_text.max(PANE_MIN)).child(
+                        Editor::new(&doc.editor)
+                            .appearance(false)
+                            .bordered(false)
+                            .h_full()
+                            .line_height(relative(1.6))
+                            // What is typed is what is shown: `->` stays two characters.
+                            .font_features(FontFeatures::disable_ligatures()),
+                    ),
+                )
+        });
+        let preview = show_preview.then(|| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_hidden()
+                .when(show_editor, |pane| {
+                    pane.border_l_1().border_color(p.border_subtle)
+                })
+                .child(
+                    div()
+                        .h_full()
+                        .w(preview_text.max(PANE_MIN))
+                        .child(self.render_preview(doc, preview_text.max(PANE_MIN), &p, cx)),
+                )
+        });
+        // The divider can be dragged while both panes are fully open.
+        let divider = (self.view == ViewMode::Split && (share - self.split).abs() < 0.001)
+            .then(|| motion::resize_handle("split-handle", editor_width, DragSplit, &p));
 
-        h_resizable("panes")
-            .with_state(&self.pane_split)
-            .child(
-                resizable_panel()
-                    .visible(self.view != ViewMode::Preview)
-                    .size_range(px(240.)..Pixels::MAX)
-                    .child(editor),
-            )
-            .child(
-                resizable_panel()
-                    .visible(self.view != ViewMode::Editor)
-                    .size_range(px(240.)..Pixels::MAX)
-                    .child(preview),
-            )
+        div()
+            .relative()
+            .flex()
+            .size_full()
+            .children(editor)
+            .children(preview)
+            .children(divider)
             .into_any_element()
     }
 

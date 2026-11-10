@@ -12,6 +12,8 @@ use gpui_kit::{AssetSource, Result, SharedString};
 icon_assets!(
     AppIcons,
     [
+        AArrowDown,
+        AArrowUp,
         ChevronDown,
         ChevronRight,
         CircleCheck,
@@ -23,6 +25,7 @@ icon_assets!(
         Hash,
         Info,
         Link2,
+        Minus,
         MessageSquareWarning,
         Moon,
         OctagonAlert,
@@ -34,6 +37,7 @@ icon_assets!(
         Share,
         Sun,
         TriangleAlert,
+        Type,
         X,
         Zap,
     ]

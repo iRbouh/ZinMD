@@ -10,6 +10,8 @@ use std::rc::Rc;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode};
 use gpui_kit::*;
 
+use crate::settings::Settings;
+
 // ---------------------------------------------------------------- primitives
 
 // Mustard: the brand colour. 500 is the classic mustard.
@@ -191,29 +193,45 @@ impl ActivePalette for App {
     }
 }
 
-/// The system fonts, by the names the OS itself uses for them.
+/// The interface font, by the name the OS itself uses for it.
 ///
-/// Naming them matters for startup: left on its defaults, the component kit
+/// Naming fonts matters for startup: left on its defaults, the component kit
 /// lists every installed font to check its default exists, which costs about
 /// 70 ms. A theme that names its fonts skips that check.
 #[cfg(target_os = "macos")]
-const FONTS: (Option<&str>, Option<&str>) = (
-    Some(".AppleSystemUIFont"),
-    Some(".AppleSystemUIFontMonospaced"),
-);
+const UI_FONT: Option<&str> = Some(".AppleSystemUIFont");
 #[cfg(not(target_os = "macos"))]
-const FONTS: (Option<&str>, Option<&str>) = (None, None);
+const UI_FONT: Option<&str> = None;
 
 /// Register both appearances. Call once, *before* `gpui_kit::init`, so the kit
 /// starts from our theme instead of loading its own first.
-pub fn install(cx: &mut App) {
+pub fn install(settings: &Settings, cx: &mut App) {
+    settings.font.load(cx);
     let light = Palette::light();
     let dark = Palette::dark();
     let mut theme = Theme::default();
-    theme.light_theme = Rc::new(kit_config(&light, ThemeMode::Light));
-    theme.dark_theme = Rc::new(kit_config(&dark, ThemeMode::Dark));
+    theme.light_theme = Rc::new(kit_config(&light, ThemeMode::Light, settings));
+    theme.dark_theme = Rc::new(kit_config(&dark, ThemeMode::Dark, settings));
     cx.set_global(theme);
     cx.set_global(Palettes { light, dark });
+}
+
+/// Use another editor font or size, in every open window, at once.
+pub fn set_editor_font(settings: &Settings, cx: &mut App) {
+    settings.font.load(cx);
+    let (light, dark) = {
+        let palettes = cx.global::<Palettes>();
+        (palettes.light, palettes.dark)
+    };
+    let family = SharedString::from(settings.font.family());
+    let size = px(settings.font_size);
+    Theme::update(cx, |theme| {
+        // Both appearances carry the font, so switching appearance keeps it.
+        theme.light_theme = Rc::new(kit_config(&light, ThemeMode::Light, settings));
+        theme.dark_theme = Rc::new(kit_config(&dark, ThemeMode::Dark, settings));
+        theme.mono_font_family = family;
+        theme.mono_font_size = size;
+    });
 }
 
 /// Switch to the appearance the system is using. Call after `gpui_kit::init`,
@@ -248,7 +266,7 @@ fn hex(color: Hsla) -> String {
 }
 
 /// The palette as the component kit understands it.
-fn kit_config(p: &Palette, mode: ThemeMode) -> ThemeConfig {
+fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig {
     let dark = mode.is_dark();
     // The current line in the editor: one small step away from the editor surface.
     let active_line = if dark { c(0x22211D) } else { c(0xF3F0EA) };
@@ -258,12 +276,12 @@ fn kit_config(p: &Palette, mode: ThemeMode) -> ThemeConfig {
     let bold = |color: Hsla| serde_json::json!({ "color": hex(color), "font_weight": 700 });
 
     let config = serde_json::json!({
-        "name": if dark { "zwinMD Dark" } else { "zwinMD Light" },
+        "name": if dark { "ZwinMD Dark" } else { "ZwinMD Light" },
         "mode": if dark { "dark" } else { "light" },
-        "font.family": FONTS.0,
+        "font.family": UI_FONT,
         "font.size": 13,
-        "mono_font.family": FONTS.1,
-        "mono_font.size": 13,
+        "mono_font.family": settings.font.family(),
+        "mono_font.size": settings.font_size,
         "radius": 6,
         "radius.lg": 8,
         "colors": {

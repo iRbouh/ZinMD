@@ -11,15 +11,18 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::input as edit;
-use gpui_kit::component::input::{EditorState, InputEvent, Position};
-use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
+use gpui_kit::base::transition;
+use gpui_kit::component::input::{EditorState, InputEvent};
 use gpui_kit::component::text::TextViewState;
 use gpui_kit::component::v_flex;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::doc::{self, Heading, Stats};
 use crate::files::{self, FileTree};
+use crate::motion;
 use crate::preview::BlockMap;
+use crate::settings::{self, EditorFont, Settings};
 use crate::startup;
 use crate::sync::{ScrollSync, Side};
 use crate::theme::{self, ActivePalette as _, size};
@@ -42,6 +45,12 @@ actions!(
         ToggleTheme,
         OpenPalette,
         ExportHtml,
+        FontBigger,
+        FontSmaller,
+        FontReset,
+        UseJetBrainsMono,
+        UseFiraCode,
+        UseMenlo,
         Quit
     ]
 );
@@ -65,6 +74,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-k", OpenPalette, None),
         KeyBinding::new("cmd-p", OpenPalette, None),
         KeyBinding::new("cmd-shift-e", ExportHtml, None),
+        KeyBinding::new("cmd-=", FontBigger, None),
+        KeyBinding::new("cmd-+", FontBigger, None),
+        KeyBinding::new("cmd--", FontSmaller, None),
+        KeyBinding::new("cmd-0", FontReset, None),
         KeyBinding::new("cmd-q", Quit, None),
     ]);
     // Reached only when no window is there to ask about unsaved changes.
@@ -75,7 +88,7 @@ pub fn init(cx: &mut App) {
 /// 11 ms), so this is called once the first frame is on screen.
 pub fn install_menus(cx: &mut App) {
     cx.set_menus(vec![
-        Menu::new("zwinMD").items([MenuItem::action("Quit zwinMD", Quit)]),
+        Menu::new("ZwinMD").items([MenuItem::action("Quit ZwinMD", Quit)]),
         Menu::new("File").items([
             MenuItem::action("New", NewFile),
             MenuItem::action("Open…", OpenFile),
@@ -106,9 +119,20 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Show or Hide Sidebar", ToggleSidebar),
             MenuItem::action("Turn Scroll Sync On or Off", ToggleScrollSync),
             MenuItem::action("Switch Light and Dark", ToggleTheme),
+            MenuItem::separator(),
+            MenuItem::action("Bigger Text", FontBigger),
+            MenuItem::action("Smaller Text", FontSmaller),
+            MenuItem::action("Default Text Size", FontReset),
+            MenuItem::separator(),
+            MenuItem::action("Font: JetBrains Mono", UseJetBrainsMono),
+            MenuItem::action("Font: Fira Code", UseFiraCode),
+            MenuItem::action("Font: Menlo", UseMenlo),
         ]),
     ]);
 }
+
+/// What dragging the edge of the sidebar carries.
+struct DragSidebar;
 
 /// Which panes the window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,10 +181,14 @@ pub struct Workspace {
     /// Every Markdown file under the open folder, for the command palette.
     file_index: Vec<PathBuf>,
     palette: Option<palette::CommandPalette>,
-    /// Widths of the sidebar and the document area.
-    sidebar_split: Entity<ResizableState>,
-    /// Widths of the editor and the preview.
-    pane_split: Entity<ResizableState>,
+    /// How wide the sidebar is when open; dragging its edge changes this.
+    sidebar_width: Pixels,
+    /// The editor's share of the document area in split view.
+    split: f32,
+    /// The editor scrolling smoothly to where it was asked to jump.
+    glide: Option<panes::Glide>,
+    /// The widths the editor and preview text were last wrapped to at rest.
+    settled: (Pixels, Pixels),
     focus: FocusHandle,
     /// Set once the user agreed to lose, or saved, every unsaved change.
     close_confirmed: bool,
@@ -168,6 +196,9 @@ pub struct Workspace {
     started: Instant,
     opened_ms: Option<f64>,
     first_frame_requested: bool,
+    /// When each frame was drawn, to judge smoothness in scripted runs.
+    #[cfg(feature = "shot")]
+    frames: Vec<Instant>,
 }
 
 impl Workspace {
@@ -189,13 +220,17 @@ impl Workspace {
             tree_scroll: UniformListScrollHandle::new(),
             file_index: Vec::new(),
             palette: None,
-            sidebar_split: cx.new(|_| ResizableState::default()),
-            pane_split: cx.new(|_| ResizableState::default()),
+            sidebar_width: size::SIDEBAR,
+            split: 0.5,
+            glide: None,
+            settled: (px(0.), px(0.)),
             focus: cx.focus_handle(),
             close_confirmed: false,
             started,
             opened_ms: None,
             first_frame_requested: false,
+            #[cfg(feature = "shot")]
+            frames: Vec::new(),
         };
 
         let path = path.map(|path| path.canonicalize().unwrap_or(path));
@@ -408,15 +443,6 @@ impl Workspace {
                 cx,
             );
         }
-    }
-
-    /// Put the caret on a source line and bring it into view.
-    fn jump_to_line(&mut self, line: u32, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.active_doc() else { return };
-        doc.editor.update(cx, |editor, cx| {
-            editor.set_cursor_position(Position::new(line, 0), window, cx);
-            editor.focus(window, cx);
-        });
     }
 
     // --------------------------------------------------------------- saving
@@ -752,6 +778,22 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Change the editor font or its size, and remember the choice.
+    fn update_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        let mut settings = *cx.global::<Settings>();
+        change(&mut settings);
+        settings.font_size = settings::clamp_size(settings.font_size);
+        if settings == *cx.global::<Settings>() {
+            return;
+        }
+        theme::set_editor_font(&settings, cx);
+        cx.set_global(settings);
+        cx.background_executor()
+            .spawn(async move { settings.save() })
+            .detach();
+        cx.notify();
+    }
+
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_open = !self.sidebar_open;
         cx.notify();
@@ -765,6 +807,27 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Say how smoothly the last script step was drawn: how many frames it took
+    /// and the longest wait between two of them while it was moving.
+    #[cfg(feature = "shot")]
+    pub fn report_frames(&mut self) {
+        let frames = std::mem::take(&mut self.frames);
+        // Frames further apart than this are separate bursts of activity, not a stutter.
+        let gaps: Vec<f64> = frames
+            .windows(2)
+            .map(|pair| pair[1].duration_since(pair[0]).as_secs_f64() * 1000.)
+            .filter(|gap| *gap < 100.)
+            .collect();
+        if gaps.len() >= 3 {
+            let longest = gaps.iter().cloned().fold(0., f64::max);
+            let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+            eprintln!(
+                "  drew {} frames, {mean:.1} ms apart on average, longest gap {longest:.1} ms",
+                gaps.len() + 1
+            );
+        }
+    }
+
     /// One step of a `ZWINMD_SCRIPT`, standing in for the user in scripted checks:
     /// `editor:<px>` and `preview:<px>` scroll a pane, `type:<text>` types at the
     /// caret, `line:<n>` moves the caret, `view:editor|split|preview`, `sidebar`,
@@ -772,6 +835,7 @@ impl Workspace {
     /// `link:<url>` follows a link and `check:<n>` clicks the n-th task checkbox.
     #[cfg(feature = "shot")]
     pub fn debug_step(&mut self, step: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.report_frames();
         let (command, argument) = step.split_once(':').unwrap_or((step, ""));
         let Some(doc) = self.active_doc() else { return };
         let id = doc.id;
@@ -821,12 +885,23 @@ impl Workspace {
                 cx,
             ),
             "sidebar" => self.toggle_sidebar(cx),
+            "wait" => {}
             "sync" => self.toggle_scroll_sync(cx),
             "new" => self.open_untitled(window, cx),
             "open" => self.open(PathBuf::from(argument), window, cx),
             "save" => self.save_doc(id, false, window, cx).detach(),
             "close" => self.request_close(self.active, window, cx),
             "palette" => self.open_palette(window, cx),
+            "font" => {
+                let font = EditorFont::ALL
+                    .into_iter()
+                    .find(|font| font.label() == argument);
+                self.update_settings(|s| s.font = font.unwrap_or(s.font), cx);
+            }
+            "size" => self.update_settings(
+                |s| s.font_size = argument.parse().unwrap_or(s.font_size),
+                cx,
+            ),
             "export" => {
                 let doc = &self.docs[self.active];
                 if let Err(error) =
@@ -886,13 +961,48 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.time_first_frame(window, cx);
+        #[cfg(feature = "shot")]
+        self.frames.push(Instant::now());
         self.sync_scroll(window, cx);
         let p = *cx.palette();
+        // The sidebar slides and the panes glide between views; both are just
+        // widths on their way to a target.
+        let sidebar_target = if self.sidebar_open {
+            self.sidebar_width
+        } else {
+            px(0.)
+        };
+        let sidebar_width = transition(
+            "sidebar-width",
+            sidebar_target,
+            motion::glide(motion::PANEL, cx),
+            window,
+            cx,
+        );
+        let share_target = match self.view {
+            ViewMode::Editor => 1.,
+            ViewMode::Split => self.split,
+            ViewMode::Preview => 0.,
+        };
+        let share = transition(
+            "editor-share",
+            share_target,
+            motion::glide(motion::PANEL, cx),
+            window,
+            cx,
+        );
+        let panes_width = window.viewport_size().width - sidebar_width;
+
         let titlebar = self.render_titlebar(window, cx);
+        // The sidebar is kept drawn even when shut, so opening it has nothing to build.
         let sidebar = self.render_sidebar(cx);
-        let panes = self.render_panes(window, cx);
+        let panes_target = (window.viewport_size().width - sidebar_target, share_target);
+        let panes = self.render_panes(panes_width, share, panes_target, cx);
         let statusbar = self.render_statusbar(cx);
         let palette = self.render_palette(cx);
+        let full_sidebar = self.sidebar_width;
+        let sidebar_handle = (self.sidebar_open && sidebar_width == full_sidebar)
+            .then(|| motion::resize_handle("sidebar-handle", sidebar_width, DragSidebar, &p));
 
         v_flex()
             .id("workspace")
@@ -938,25 +1048,75 @@ impl Render for Workspace {
                 }),
             )
             .on_action(cx.listener(|this, _: &ExportHtml, window, cx| this.export_html(window, cx)))
+            .on_action(cx.listener(|this, _: &FontBigger, _, cx| {
+                this.update_settings(|s| s.font_size += 1., cx)
+            }))
+            .on_action(cx.listener(|this, _: &FontSmaller, _, cx| {
+                this.update_settings(|s| s.font_size -= 1., cx)
+            }))
+            .on_action(cx.listener(|this, _: &FontReset, _, cx| {
+                this.update_settings(|s| s.font_size = settings::DEFAULT_FONT_SIZE, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UseJetBrainsMono, _, cx| {
+                this.update_settings(|s| s.font = EditorFont::JetBrainsMono, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UseFiraCode, _, cx| {
+                this.update_settings(|s| s.font = EditorFont::FiraCode, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UseMenlo, _, cx| {
+                this.update_settings(|s| s.font = EditorFont::Menlo, cx)
+            }))
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.quit(window, cx)))
+            .on_drag_move::<DragSidebar>(cx.listener(
+                |this, drag: &DragMoveEvent<DragSidebar>, _, cx| {
+                    this.sidebar_width = drag.event.position.x.clamp(px(180.), px(480.));
+                    cx.notify();
+                },
+            ))
+            .on_drag_move::<panes::DragSplit>(cx.listener(
+                |this, drag: &DragMoveEvent<panes::DragSplit>, window, cx| {
+                    let left = if this.sidebar_open {
+                        this.sidebar_width
+                    } else {
+                        px(0.)
+                    };
+                    let width = window.viewport_size().width - left;
+                    this.split = ((drag.event.position.x - left) / width).clamp(0.2, 0.8);
+                    cx.notify();
+                },
+            ))
             .child(titlebar)
             .child(
-                div().flex_1().min_h_0().w_full().child(
-                    h_resizable("workspace")
-                        .with_state(&self.sidebar_split)
-                        .child(
-                            resizable_panel()
-                                .visible(self.sidebar_open)
-                                .size(size::SIDEBAR)
-                                .size_range(px(180.)..px(480.))
-                                .child(sidebar),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size_range(px(320.)..Pixels::MAX)
-                                .child(panes),
-                        ),
-                ),
+                div()
+                    .relative()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    // The sidebar keeps its full width and slides out to the left
+                    // from under a window that narrows, so its text never re-wraps.
+                    .child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .h_full()
+                            .w(sidebar_width)
+                            .overflow_hidden()
+                            .when(sidebar_width > px(0.5), |slot| {
+                                slot.border_r_1().border_color(p.border_subtle)
+                            })
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right_0()
+                                    .w(full_sidebar)
+                                    .child(sidebar),
+                            ),
+                    )
+                    .child(div().flex_1().min_w_0().h_full().child(panes))
+                    .children(sidebar_handle),
             )
             .child(statusbar)
             .children(palette)

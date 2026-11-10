@@ -95,6 +95,15 @@ impl Workspace {
                 Box::new(OpenFile),
             ),
             (IconName::Share, "Export as HTML…", Box::new(ExportHtml)),
+            (
+                IconName::Type,
+                "Font: JetBrains Mono",
+                Box::new(UseJetBrainsMono),
+            ),
+            (IconName::Type, "Font: Fira Code", Box::new(UseFiraCode)),
+            (IconName::Type, "Font: Menlo", Box::new(UseMenlo)),
+            (IconName::AArrowUp, "Bigger text", Box::new(FontBigger)),
+            (IconName::AArrowDown, "Smaller text", Box::new(FontSmaller)),
         ];
         targets.push(commands.iter().map(|_| Target::Command).collect());
         groups.push((
@@ -199,7 +208,15 @@ impl Workspace {
                         .shadow_lg()
                         .overflow_hidden()
                         .on_click(|_, _, cx| cx.stop_propagation())
-                        .child(command),
+                        .child(command)
+                        // It arrives: fades in while settling down the last few points.
+                        .with_animation(
+                            "palette-arrives",
+                            Animation::new(crate::motion::QUICK).with_easing(crate::motion::ease),
+                            |panel, progress| {
+                                panel.opacity(progress).mt(px(-10.) * (1. - progress))
+                            },
+                        ),
                 ),
         )
     }

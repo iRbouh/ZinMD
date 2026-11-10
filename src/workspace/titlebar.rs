@@ -2,11 +2,13 @@
 //! appearance and export on the right.
 
 use gpui_kit::assets::IconName;
+use gpui_kit::base::transition;
 use gpui_kit::component::{ActiveTheme as _, Icon, TitleBar, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::{ViewMode, Workspace};
+use crate::motion;
 use crate::theme::{self, ActivePalette as _, Palette, size};
 use crate::ui::icon_button;
 
@@ -55,7 +57,7 @@ impl Workspace {
             .gap(px(4.))
             .pl(px(16.))
             .pr(px(12.))
-            .child(self.render_view_switch(&p, cx))
+            .child(self.render_view_switch(&p, window, cx))
             .child(
                 icon_button("search", IconName::Search, &p)
                     .ml(px(8.))
@@ -167,20 +169,43 @@ impl Workspace {
             .on_click(cx.listener(move |this, _, window, cx| this.activate(ix, window, cx)))
     }
 
-    /// Editor / Split / Preview.
-    fn render_view_switch(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let item = |mode: ViewMode, label: &'static str, icon: IconName| {
+    /// Editor / Split / Preview. The yellow pill slides to the chosen view.
+    fn render_view_switch(
+        &self,
+        p: &Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        /// Every segment is this wide, so the pill only ever has to move.
+        const SEGMENT: Pixels = px(86.);
+        let modes = [
+            (ViewMode::Editor, "Editor", IconName::Pencil),
+            (ViewMode::Split, "Split", IconName::Columns2),
+            (ViewMode::Preview, "Preview", IconName::Eye),
+        ];
+        let chosen = modes
+            .iter()
+            .position(|(mode, ..)| *mode == self.view)
+            .unwrap_or(0);
+        let pill_x = transition(
+            "view-pill",
+            SEGMENT * chosen as f32,
+            motion::glide(motion::QUICK, cx),
+            window,
+            cx,
+        );
+
+        let items = modes.into_iter().map(|(mode, label, icon)| {
             let strong = p.text_primary;
             h_flex()
                 .id(label)
+                .w(SEGMENT)
                 .h_full()
-                .px(px(9.))
+                .justify_center()
                 .gap(px(6.))
-                .rounded(px(5.))
                 .map(|item| {
                     if self.view == mode {
-                        item.bg(p.accent)
-                            .text_color(p.text_on_accent)
+                        item.text_color(p.text_on_accent)
                             .font_weight(FontWeight::SEMIBOLD)
                     } else {
                         item.text_color(p.text_secondary)
@@ -191,18 +216,31 @@ impl Workspace {
                 .child(label)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, _, cx| this.set_view(mode, cx)))
-        };
+        });
 
-        h_flex()
+        div()
             .flex_none()
             .h(px(28.))
             .p(px(1.))
             .rounded(size::RADIUS_SM)
             .border_1()
             .border_color(p.border_subtle)
-            .child(item(ViewMode::Editor, "Editor", IconName::Pencil))
-            .child(item(ViewMode::Split, "Split", IconName::Columns2))
-            .child(item(ViewMode::Preview, "Preview", IconName::Eye))
+            .child(
+                h_flex()
+                    .relative()
+                    .h_full()
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(pill_x)
+                            .w(SEGMENT)
+                            .rounded(px(5.))
+                            .bg(p.accent),
+                    )
+                    .children(items),
+            )
     }
 
     fn render_export_button(&self, p: &Palette) -> Stateful<Div> {

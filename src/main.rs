@@ -1,4 +1,4 @@
-//! zwinMD: a fast native Markdown editor and viewer.
+//! ZwinMD: a fast native Markdown editor and viewer.
 //!
 //! Usage: `zwinmd [file.md | folder]`
 
@@ -9,7 +9,9 @@ mod assets;
 mod doc;
 mod export;
 mod files;
+mod motion;
 mod preview;
+mod settings;
 #[cfg(feature = "shot")]
 mod shot;
 mod startup;
@@ -34,7 +36,9 @@ fn main() {
     startup::mark("application created");
     app.run(move |cx| {
         startup::mark("event loop running");
-        theme::install(cx);
+        let settings = settings::Settings::load();
+        theme::install(&settings, cx);
+        cx.set_global(settings);
         gpui_kit::init(cx);
         startup::mark("component kit ready");
         theme::follow_system(cx);
@@ -72,6 +76,10 @@ fn main() {
             // Our title bar moves the window itself, so clicks on it are never delayed.
             app_owns_titlebar_drag: true,
             focus: cfg!(not(feature = "shot")),
+            // Scripted runs stay in the background, where frames are normally
+            // held to 30 a second; lift that so they measure real smoothness.
+            #[cfg(feature = "shot")]
+            inactive_frame_interval: None,
             ..Default::default()
         };
         let (_window, _workspace) = gpui_kit::open_window(options, cx, |window, cx| {

@@ -37,24 +37,36 @@ pub fn after_first_frame(window: AnyWindowHandle, workspace: Entity<Workspace>, 
         cx.background_executor()
             .timer(Duration::from_millis(400))
             .await;
-        // Run the script one step at a time, giving each a few frames to settle.
-        for step in std::env::var("ZWINMD_SCRIPT")
-            .unwrap_or_default()
-            .split(';')
-            .filter(|step| !step.is_empty())
-        {
+        // Run the script one step at a time, giving each time to settle.
+        // `ZWINMD_PAUSE` sets how long; `ZWINMD_SETTLE` how long to wait before
+        // the picture, so a short one catches an animation midway.
+        let millis = |name: &str, default: u64| {
+            Duration::from_millis(
+                std::env::var(name)
+                    .ok()
+                    .and_then(|ms| ms.parse().ok())
+                    .unwrap_or(default),
+            )
+        };
+        let script = std::env::var("ZWINMD_SCRIPT").unwrap_or_default();
+        for step in script.split(';').filter(|step| !step.is_empty()) {
             let step = step.to_string();
+            eprintln!("step {step}");
             cx.update_window(window, |_, window, cx| {
                 workspace.update(cx, |workspace, cx| workspace.debug_step(&step, window, cx))
             })
             .ok();
             cx.background_executor()
-                .timer(Duration::from_millis(150))
+                .timer(millis("ZWINMD_PAUSE", 150))
                 .await;
         }
         cx.background_executor()
-            .timer(Duration::from_millis(600))
+            .timer(millis("ZWINMD_SETTLE", 600))
             .await;
+        cx.update_window(window, |_, _, cx| {
+            workspace.update(cx, |workspace, _| workspace.report_frames())
+        })
+        .ok();
         cx.update_window(window, |_, window, cx| {
             window.refresh();
             match window.render_to_image() {
