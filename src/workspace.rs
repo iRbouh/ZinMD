@@ -12,6 +12,7 @@ mod panel;
 mod panes;
 mod reader;
 mod statusbar;
+mod updates;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,6 +65,8 @@ actions!(
         RenameFile,
         TrashFile,
         RevealFile,
+        CheckForUpdates,
+        ToggleUpdates,
         CopyFilePath,
         CopyFileContent,
         PreviousSection,
@@ -116,7 +119,11 @@ pub fn init(cx: &mut App) {
 /// 11 ms), so this is called once the first frame is on screen.
 pub fn install_menus(cx: &mut App) {
     cx.set_menus(vec![
-        Menu::new("ZinMD").items([MenuItem::action("Quit ZinMD", Quit)]),
+        Menu::new("ZinMD").items([
+            MenuItem::action("Check for Updates…", CheckForUpdates),
+            MenuItem::separator(),
+            MenuItem::action("Quit ZinMD", Quit),
+        ]),
         Menu::new("File").items([
             MenuItem::action("New", NewFile),
             MenuItem::action("Open…", OpenFile),
@@ -297,6 +304,15 @@ pub struct Workspace {
     focus: FocusHandle,
     /// Set once the user agreed to lose, or saved, every unsaved change.
     close_confirmed: bool,
+    /// How this copy was installed, and so how a new version takes its place.
+    install: crate::update::Install,
+    /// What there is to say about a new version, and whether the card that
+    /// says it is up.
+    update: updates::Update,
+    update_shown: bool,
+    _update_look: Task<()>,
+    _update_work: Task<()>,
+    _update_hide: Task<()>,
     /// When the process started, to report how long opening took.
     started: Instant,
     opened_ms: Option<f64>,
@@ -378,6 +394,12 @@ impl Workspace {
             settled: (px(0.), px(0.)),
             focus: cx.focus_handle(),
             close_confirmed: false,
+            install: crate::update::Install::detect(),
+            update: updates::Update::Quiet,
+            update_shown: false,
+            _update_look: Task::ready(()),
+            _update_work: Task::ready(()),
+            _update_hide: Task::ready(()),
             started,
             opened_ms: None,
             first_frame_requested: false,
@@ -1466,6 +1488,11 @@ impl Workspace {
                 None => self.open_palette(window, cx),
             },
             "find" => window.dispatch_action(Box::new(edit::Search), cx),
+            // `update:ready`, `update:out`, `update:done` and the rest put the
+            // card that tells of a new version up, as if one had been found.
+            "update" => self.debug_update(argument, cx),
+            // What restarting into a new version does before it leaves.
+            "backup" => self.back_up_now(),
             // File actions on a row of the side panel: `context:<name>` picks the
             // row as a right-click would, then `newfile`, `rename`, `trash` act on
             // it; `name:<text>` types a name, and `key:enter` confirms it.
@@ -1624,6 +1651,7 @@ impl Workspace {
                 this.restore_files(window, cx);
                 this.restore_backups(window, cx);
                 this.start_watching(window, cx);
+                this.start_updates(window, cx);
                 this.shape_window(window);
                 cx.notify();
             })
@@ -1662,6 +1690,7 @@ impl Render for Workspace {
         };
         let palette = self.render_palette(window, cx);
         let peek = self.render_peek(window, cx);
+        let update = self.render_update(window, cx);
 
         v_flex()
             .id("workspace")
@@ -1759,6 +1788,12 @@ impl Render for Workspace {
                 this.update_settings(|s| s.font = EditorFont::Menlo, cx)
             }))
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.quit(window, cx)))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
+                this.look_for_update(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleUpdates, _, cx| {
+                this.update_settings(|settings| settings.updates = !settings.updates, cx)
+            }))
             // Escape shuts the menu of colours before it means anything else:
             // as the editor's own action when the editor has the keyboard, as
             // a plain key otherwise.
@@ -1839,6 +1874,7 @@ impl Render for Workspace {
             .child(body)
             .children(peek)
             .children(palette)
+            .children(update)
     }
 }
 

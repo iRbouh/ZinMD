@@ -124,6 +124,19 @@ impl Workspace {
             (IconName::Type, "Font: Menlo", Box::new(UseMenlo)),
             (IconName::AArrowUp, "Bigger text", Box::new(FontBigger)),
             (IconName::AArrowDown, "Smaller text", Box::new(FontSmaller)),
+            (
+                IconName::CircleCheck,
+                "Check for updates",
+                Box::new(CheckForUpdates),
+            ),
+            (
+                IconName::CircleCheck,
+                match cx.global::<crate::settings::Settings>().updates {
+                    true => "Stop looking for updates by itself",
+                    false => "Look for updates by itself",
+                },
+                Box::new(ToggleUpdates),
+            ),
         ];
         targets.push(commands.iter().map(|_| Target::Command).collect());
         groups.push((

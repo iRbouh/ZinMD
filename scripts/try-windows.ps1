@@ -5,7 +5,8 @@
 #
 # The zip is unpacked and its program asked its version. The installer is run
 # without its windows, a Markdown file is opened the way a double click opens
-# it, and ZinMD is then removed again. In the release pipeline, a picture of
+# it, both copies are told of a newer release and left to update themselves,
+# and ZinMD is then removed again. In the release pipeline, a picture of
 # the screen with the app open is left in dist\seen\. No picture is taken of
 # anyone's own screen.
 param([string]$Arch = "x64")
@@ -80,6 +81,35 @@ if ($env:CI) { try {
 } }
 Stop-Process -Id $app.Id -Force
 $app.WaitForExit()
+
+# Updates. A copy is told of a release newer than itself: these same
+# downloads, under a later number. It is left to take that in with nobody
+# there to click, and is expected to be replaced and to be running again.
+function Update($program, $what) {
+    $list = Join-Path $work "latest.json"
+    python scripts\release-list.py 99.0.0 dist | Set-Content -Encoding utf8NoBOM $list
+    $env:ZINMD_UPDATE_FEED = $list
+    $env:ZINMD_UPDATE = "now"
+    $first = Start-Process -FilePath $program -ArgumentList "`"$((Resolve-Path "samples\roadmap.md").Path)`"" -PassThru
+    $env:ZINMD_UPDATE = $null
+    $env:ZINMD_UPDATE_FEED = $null
+    Check "$what left to make room for the new version" ($first.WaitForExit(180000))
+    $second = $null
+    foreach ($moment in 1..240) {
+        Start-Sleep -Milliseconds 500
+        $second = Get-Process -Name ZinMD -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $first.Id } | Select-Object -First 1
+        if ($second) { break }
+    }
+    Check "$what started again by itself" ($null -ne $second)
+    Start-Sleep -Seconds 5
+    $second.Refresh()
+    Check "$what stayed open after updating" (-not $second.HasExited)
+    Check "$what still says it is ZinMD $version" ((Version $program) -eq "ZinMD $version")
+    Stop-Process -Id $second.Id -Force
+    $second.WaitForExit()
+}
+Update $installed "the installed copy"
+Update (Join-Path $work "zip\ZinMD\ZinMD.exe") "the copy from the zip"
 
 # Take it away again, and see that it is gone.
 $remover = Join-Path (Split-Path $installed) "unins000.exe"

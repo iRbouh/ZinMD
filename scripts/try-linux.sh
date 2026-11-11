@@ -10,8 +10,10 @@
 #   .AppImage   run as it is
 #   .tar.gz     unpacked and installed into a folder
 #
-# Last, the .deb is installed here and the app opened on a document, on a
-# screen that exists only in memory. What it said is left in dist/seen/.
+# Then the .deb is installed here and the app opened on a document, on a
+# screen that exists only in memory. Last, the two copies that can update
+# themselves (the AppImage, and the one installed from the .tar.gz) are told
+# of a newer release and left to. What the app said is left in dist/seen/.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -80,6 +82,16 @@ echo "ok: the .tar.gz unpacks and installs into a folder"
 if command -v xvfb-run >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
     sudo apt-get install -y -qq "./dist/$name.deb" >/dev/null
     scripts/see-linux.sh "$(command -v zinmd)" "$seen/$name-window.log"
+
+    # Updates. Each copy is expected to replace itself and start again.
+    on_a_screen() {
+        xvfb-run -a -s "-screen 0 1280x800x24" "$@"
+    }
+    on_a_screen scripts/try-update.sh "$work/prefix/bin/zinmd" "$work/prefix/bin/zinmd" \
+        "$seen/$name-update-tar.log"
+    # (An AppImage unpacks itself here, as above; the new one must as well.)
+    APPIMAGE_EXTRACT_AND_RUN=1 on_a_screen scripts/try-update.sh "$work/ZinMD.AppImage" \
+        "$work/ZinMD.AppImage" "$seen/$name-update-appimage.log"
 else
     echo "note: no screen in memory here; the app was not opened on a document"
 fi

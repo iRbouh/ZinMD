@@ -35,6 +35,7 @@ A file opens as a page to read, in a window the shape of a sheet of paper.
 - Export to one self-contained HTML file
 - Picks up changes made on disk, reopens where you left off, and keeps
   unsaved work safe if the app crashes
+- Updates itself: one click, and it is back on the new version
 - Light and dark, with JetBrains Mono, Fira Code or Menlo in the editor
 
 ## Install
@@ -56,6 +57,24 @@ opened with it from the file manager.
 ZinMD is not signed yet, so macOS and Windows ask before they open it the
 first time. On macOS, choose **Open Anyway** under System Settings, Privacy &
 Security. On Windows, choose **More info**, then **Run anyway**.
+
+## Updates
+
+ZinMD looks for a new version when it starts, and a few times a day after
+that. When there is one it fetches it in the background, checks it, and then
+says so on a small card at the foot of the window. **Restart** swaps the new
+version in and opens it with every file as you left it, unsaved edits
+included.
+
+- The Mac app, both Windows versions, the Linux AppImage and the copy
+  installed from the `.tar.gz` update themselves this way.
+- A `.deb` or `.rpm` belongs to the system, so there ZinMD only says that a
+  new version is out, with a link to it.
+- "Check for updates" is in the command palette, and in the app's menu on
+  macOS. "Stop looking for updates by itself" turns the looking off.
+
+Looking for a new version asks GitHub for one small file. Nothing about you
+or your documents is sent.
 
 ## Build
 
@@ -83,7 +102,8 @@ The `samples` folder has a few documents to try it with.
 Pushing a tag makes a release: `git tag v0.2.0 && git push origin v0.2.0`,
 with the same number in `Cargo.toml`. GitHub then builds every download in
 the table above, tries each one the way a person would (installs it, opens a
-document, removes it), and attaches them to a new release. A tag with a dash
+document, updates it, removes it), and attaches them to a new release, with
+the list that tells the copies already out there that it exists. A tag with a dash
 in it, such as `v0.2.0-rc.1`, makes a pre-release.
 
 The same can be done by hand, on the system in question:

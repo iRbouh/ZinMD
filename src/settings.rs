@@ -97,6 +97,8 @@ pub struct Settings {
     pub accent: Accent,
     pub font: EditorFont,
     pub font_size: f32,
+    /// Whether the app looks for new versions by itself.
+    pub updates: bool,
 }
 
 impl Global for Settings {}
@@ -107,6 +109,7 @@ impl Default for Settings {
             accent: Accent::default(),
             font: EditorFont::JetBrainsMono,
             font_size: DEFAULT_FONT_SIZE,
+            updates: true,
         }
     }
 }
@@ -139,6 +142,9 @@ impl Settings {
         if let Some(size) = json["editor_font_size"].as_f64() {
             settings.font_size = clamp_size(size as f32);
         }
+        if let Some(updates) = json["look_for_updates"].as_bool() {
+            settings.updates = updates;
+        }
         settings
     }
 
@@ -147,6 +153,7 @@ impl Settings {
             "accent": self.accent.label(),
             "editor_font": self.font.label(),
             "editor_font_size": self.font_size,
+            "look_for_updates": self.updates,
         });
         serde_json::to_string_pretty(&json).unwrap_or_default()
     }
@@ -180,6 +187,7 @@ mod tests {
             accent: Accent::Sky,
             font: EditorFont::FiraCode,
             font_size: 15.,
+            updates: false,
         };
         assert_eq!(Settings::parse(&settings.to_json()), settings);
     }
@@ -197,7 +205,8 @@ mod tests {
             Settings {
                 accent: Accent::Mustard,
                 font: EditorFont::JetBrainsMono,
-                font_size: 32.
+                font_size: 32.,
+                updates: true,
             }
         );
         // Settings written before there were colours to choose from still load.
@@ -207,7 +216,9 @@ mod tests {
             Settings {
                 accent: Accent::Mustard,
                 font: EditorFont::Menlo,
-                font_size: 14.
+                font_size: 14.,
+                // Looking for new versions is on unless it was turned off.
+                updates: true,
             }
         );
     }

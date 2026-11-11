@@ -3,6 +3,10 @@
 ; It installs for the person running it, without asking for an administrator,
 ; and offers to open Markdown files with ZinMD. Removing ZinMD takes all of
 ; that away again.
+;
+; It is also how an installed ZinMD updates itself: the app fetches the new
+; installer, starts it with /VERYSILENT /UPDATE=1, and leaves. The installer
+; then waits for the app to have gone, replaces it, and starts it again.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -100,3 +104,32 @@ Root: HKA; Subkey: "Software\Classes\.mkd"; ValueType: string; ValueName: ""; Va
 
 [Run]
 Filename: "{app}\ZinMD.exe"; Description: "{cm:LaunchProgram,ZinMD}"; Flags: nowait postinstall skipifsilent
+; After an update, the app that asked for it is waiting to be started again.
+Filename: "{app}\ZinMD.exe"; Flags: nowait; Check: Updating
+
+[Code]
+// Whether the running app started this installer, to update itself.
+function Updating: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
+// The app leaves as soon as it has started its update, but may still be on
+// its way out when the installer gets here. Its file can be deleted only
+// once it has gone, so trying to is how the installer waits for it.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Target: String;
+  Tries: Integer;
+begin
+  Result := '';
+  if not Updating then
+    Exit;
+  Target := ExpandConstant('{app}\ZinMD.exe');
+  Tries := 0;
+  while FileExists(Target) and (not DeleteFile(Target)) and (Tries < 200) do
+  begin
+    Sleep(100);
+    Tries := Tries + 1;
+  end;
+end;

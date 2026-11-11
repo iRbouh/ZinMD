@@ -47,6 +47,18 @@ impl Workspace {
         });
     }
 
+    /// Write every backup now, without waiting for a pause in typing. The
+    /// app is about to restart; what is unsaved comes back from these.
+    pub(super) fn back_up_now(&mut self) {
+        std::fs::create_dir_all(folder()).ok();
+        for doc in self.docs.iter_mut().filter(|doc| doc.dirty()) {
+            doc._backup = Task::ready(());
+            let backup =
+                json!({ "path": doc.path, "name": doc.name.as_ref(), "text": doc.text.as_ref() });
+            std::fs::write(file(&doc.backup_key), backup.to_string()).ok();
+        }
+    }
+
     /// Forget every backup: the user has just chosen what happens to all unsaved edits.
     pub(super) fn drop_backups(&mut self) {
         for doc in &mut self.docs {

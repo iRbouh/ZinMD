@@ -1,6 +1,7 @@
 #!/bin/sh
 # Try the macOS downloads the way a person would: open the disk image, drag
-# the app out, and start it on a document. Then the same from the zip.
+# the app out, and start it on a document. Then the same from the zip. Last,
+# the app is told of a newer release and left to update itself.
 # Run after scripts/package-macos.sh, with the same argument.
 #
 #   scripts/try-macos.sh arm64|x64
@@ -20,7 +21,9 @@ version="${ZINMD_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | hea
 name="ZinMD-$version-macos-$arch"
 seen="$PWD/dist/seen"
 mkdir -p "$seen"
-work="$(mktemp -d)"
+# Its real place, not the shortcut to it that macOS hands out: the app knows
+# itself by the real one.
+work="$(cd "$(mktemp -d)" && pwd -P)"
 running=""
 tidy() {
     [ -z "$running" ] || kill "$running" 2>/dev/null || true
@@ -88,5 +91,12 @@ try_app "$work/dmg/ZinMD.app" dmg
 mkdir "$work/zip"
 ditto -x -k "dist/$name.zip" "$work/zip"
 try_app "$work/zip/ZinMD.app" zip
+
+# An update: the copy taken from the disk image is told of a newer release,
+# and is expected to replace itself with it and start again.
+if [ "$can_run" = yes ]; then
+    scripts/try-update.sh "$work/dmg/ZinMD.app/Contents/MacOS/ZinMD" "$work/dmg/ZinMD.app" \
+        "$seen/$name-update.log"
+fi
 
 echo "the macOS downloads for $arch work"

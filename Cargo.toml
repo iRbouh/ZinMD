@@ -37,6 +37,8 @@ gpui_platform_shot = { package = "gpui-pre-platform", version = "=0.3.12", optio
 # (the way desktops agree on) and how the system's own components are entered
 # on Windows (the way a window's thread uses).
 trash = { version = "5", default-features = false, features = ["freedesktop", "coinit_apartmentthreaded"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.10"
 
 # The window changes shape between the page and the editor, and keeps the
 # proportions of a sheet of paper while it is a page. AppKit is asked directly.
