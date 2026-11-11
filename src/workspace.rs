@@ -12,6 +12,7 @@ mod palette;
 mod panel;
 mod panes;
 mod reader;
+mod search_window;
 mod statusbar;
 mod trail;
 mod updates;
@@ -360,6 +361,10 @@ pub struct Workspace {
     /// The field for finding words on the page, and whether it is up.
     find: Option<find::Find>,
     find_open: bool,
+    /// The window that searches the text of every file, while it is open or
+    /// on its way out.
+    search: Option<search_window::SearchWindow>,
+    search_open: bool,
     _viewer_save: Task<()>,
     _update_look: Task<()>,
     _update_work: Task<()>,
@@ -454,6 +459,8 @@ impl Workspace {
             viewer_open: false,
             find: None,
             find_open: false,
+            search: None,
+            search_open: false,
             _viewer_save: Task::ready(()),
             _update_look: Task::ready(()),
             _update_work: Task::ready(()),
@@ -1666,8 +1673,17 @@ impl Workspace {
             "name" => self.debug_name(argument, window, cx),
             "search" => self.open_search(window, cx),
             // Type into the palette, whichever kind is open.
-            "query" => self.type_in_palette(argument, window, cx),
+            "query" => match (self.searching(), &self.palette) {
+                (true, _) => self.type_in_search(argument, window, cx),
+                (false, Some(palette)) => palette.type_query(argument, window, cx),
+                (false, None) => {}
+            },
             // Choose a row of the palette: `pick:<group>.<row>`.
+            // Or, in the window that searches every file, the n-th place
+            // that was found: `pick:<n>`.
+            "pick" if self.searching() => {
+                self.debug_pick_found(argument.parse().unwrap_or(0), window, cx)
+            }
             "pick" => {
                 let (group, row) = argument.split_once('.').unwrap_or((argument, "0"));
                 let at = gpui_kit::component::IndexPath::new(row.parse().unwrap_or(0))
@@ -1852,6 +1868,7 @@ impl Render for Workspace {
                 .into_any_element(),
         };
         let palette = self.render_palette(window, cx);
+        let searching = self.render_search_window(window, cx);
         let peek = self.render_peek(window, cx);
         let update = self.render_update(window, cx);
         let viewer = self.render_viewer(window, cx);
@@ -2034,6 +2051,10 @@ impl Render for Workspace {
                 if this.viewer_key(&event.keystroke, window, cx) {
                     return cx.stop_propagation();
                 }
+                // And so does the window that searches every file.
+                if this.search_key(&event.keystroke, window, cx) {
+                    return cx.stop_propagation();
+                }
                 // Escape puts the field for finding words away.
                 if this.finding() && event.keystroke.key == "escape" {
                     this.close_find(window, cx);
@@ -2108,6 +2129,7 @@ impl Render for Workspace {
             .child(body)
             .children(peek)
             .children(palette)
+            .children(searching)
             .children(find)
             .children(viewer)
             .children(update)
