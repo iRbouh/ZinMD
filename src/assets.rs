@@ -22,8 +22,12 @@ icon_assets!(
         CircleCheck,
         Code,
         Columns2,
+        Contrast,
         Copy,
+        Download,
+        Expand,
         Eye,
+        FileCode,
         FilePlus,
         FileText,
         Folder,
@@ -42,6 +46,7 @@ icon_assets!(
         PinOff,
         Plus,
         Quote,
+        Scan,
         Search,
         Share,
         Sun,
@@ -50,6 +55,8 @@ icon_assets!(
         Type,
         X,
         Zap,
+        ZoomIn,
+        ZoomOut,
     ]
 );
 

@@ -32,6 +32,7 @@ use super::menu::key_cap;
 use super::{CopyFileContent, CopyFilePath, Workspace};
 use crate::doc::{self, Stats};
 use crate::files;
+use crate::matching::{self, Folded, Wanted};
 use crate::motion;
 use crate::system::{self, shortcut};
 use crate::theme::{ActivePalette as _, Palette, size};
@@ -397,28 +398,28 @@ impl Workspace {
         (placed, y)
     }
 
-    /// The files whose names hold what is typed in the search: those that
-    /// start with it first, then the rest, each by name.
+    /// The files whose names answer what is typed in the search, the best
+    /// answers first: names that start with it, names with a word that starts
+    /// with it, names that hold it, then its words in any order, its letters
+    /// in order (`fg` for `field-guide`) and names it nearly spells.
     fn hits(&self) -> Vec<Hit> {
-        let wanted = self.panel.query.to_lowercase();
-        let mut hits: Vec<Hit> = Vec::new();
+        let wanted = Wanted::new(&self.panel.query);
+        let mut folded = Folded::default();
+        let mut hits: Vec<(u8, Hit)> = Vec::new();
         let mut consider = |path: &Path, place: String| {
             let name = files::display_name(path);
-            if let Some(at) = name.to_lowercase().find(&wanted) {
-                // Lowering the case can change how long a letter is: only
-                // mark the name where the two still line up.
-                let found = match name.is_char_boundary(at)
-                    && name.is_char_boundary((at + wanted.len()).min(name.len()))
-                {
-                    true => (at, wanted.len().min(name.len() - at)),
-                    false => (0, 0),
-                };
-                hits.push(Hit {
-                    path: path.to_path_buf(),
-                    name: name.into(),
-                    found,
-                    place: place.into(),
-                });
+            folded.fill(&name);
+            if let Some((rank, marked)) = matching::name_answers(&folded, &wanted) {
+                let found = marked.map_or((0, 0), |part| (part.start, part.len()));
+                hits.push((
+                    rank,
+                    Hit {
+                        path: path.to_path_buf(),
+                        name: name.into(),
+                        found,
+                        place: place.into(),
+                    },
+                ));
             }
         };
         for ix in self.singles() {
@@ -445,12 +446,9 @@ impl Workspace {
                 consider(file, place);
             }
         }
-        hits.sort_by_cached_key(|hit| {
-            let name = hit.name.to_lowercase();
-            (!name.starts_with(&wanted), name)
-        });
+        hits.sort_by_cached_key(|(rank, hit)| (*rank, hit.name.to_lowercase()));
         hits.truncate(HITS);
-        hits
+        hits.into_iter().map(|(_, hit)| hit).collect()
     }
 
     /// The row of the document on show, if it is listed.

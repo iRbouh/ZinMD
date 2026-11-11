@@ -26,12 +26,17 @@ A file opens as a page to read, in a window the shape of a sheet of paper.
 - An editor one key away: source, live preview, or both side by side, with scroll sync
 - GitHub-style Markdown: tables, task lists, front matter, callouts
 - LaTeX math and Mermaid diagrams, drawn natively
+- Pictures and diagrams open large on a click: zoom, move, copy, save
+- Words that grow with the page, a black-and-white switch for sharper
+  reading, and find on the page
 - Highlighted code blocks
 - A side panel instead of tabs: the files you opened, then the folders you
   added, with their Markdown files. Pin a folder, drag it elsewhere, type to
   find a file in any of them, peek inside a file without opening it
 - Copy a file's content or its path from its row; new, rename, move to Trash
 - Command palette (`⌘P`) and search across every folder (`⇧⌘F`)
+- Search that forgives: accents and case do not count, words are found in
+  any order, and a slip of the finger still finds the word you meant
 - Export to one self-contained HTML file
 - Picks up changes made on disk, reopens where you left off, and keeps
   unsaved work safe if the app crashes
@@ -132,7 +137,8 @@ The files land in `dist/`.
 | `⌘P` | Command palette |
 | `⇧⌘F` | Search in all files |
 | `⇧⌘E` | Export as HTML |
-| `⌘+` `⌘-` `⌘0` | Editor text size |
+| `⌘+` `⌘-` `⌘0` | Text size: the page's while reading, the editor's while editing |
+| `⌘F` `⌘G` `⇧⌘G` | Find on the page, next, previous |
 | `⌘N` `⌘O` `⌘S` `⌘W` | New, open, save, close |
 
 In the side panel the arrows move through the rows, Return opens one, Space

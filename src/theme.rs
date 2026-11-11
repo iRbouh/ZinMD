@@ -290,6 +290,8 @@ pub mod size {
     pub const FONT_UI_SMALL: Pixels = px(11.);
     pub const FONT_EDITOR: Pixels = px(13.);
     pub const FONT_BODY: Pixels = px(15.);
+    /// As big as the words of a page get by themselves, in a tall window.
+    pub const FONT_BODY_LARGEST: Pixels = px(17.);
     pub const FONT_H1: Pixels = px(30.);
     pub const FONT_H2: Pixels = px(21.);
     pub const FONT_H3: Pixels = px(17.);
@@ -361,8 +363,7 @@ const UI_FONT: Option<&str> = None;
 /// starts from our theme instead of loading its own first.
 pub fn install(settings: &Settings, cx: &mut App) {
     settings.font.load(cx);
-    let light = Palette::light(settings.accent);
-    let dark = Palette::dark(settings.accent);
+    let (light, dark) = palettes(settings);
     let mut theme = Theme::default();
     theme.light_theme = Rc::new(kit_config(&light, ThemeMode::Light, settings));
     theme.dark_theme = Rc::new(kit_config(&dark, ThemeMode::Dark, settings));
@@ -393,8 +394,31 @@ pub fn settled(cx: &App) -> Palette {
     }
 }
 
-/// Use another accent colour, in every open window, fading over to it.
-pub fn set_accent(settings: &Settings, cx: &mut App) {
+/// The light and the dark palette for `settings`: built around the accent,
+/// and with the page in plain black and white when that is asked for.
+fn palettes(settings: &Settings) -> (Palette, Palette) {
+    let (mut light, mut dark) = (
+        Palette::light(settings.accent),
+        Palette::dark(settings.accent),
+    );
+    if settings.contrast {
+        // Not pure black and pure white, which glare: the darkest and the
+        // lightest of the app's own warm greys, set further apart than a
+        // page usually has them. What is quieter than the words keeps its
+        // distance from them.
+        light.surface_preview = c(STONE_50);
+        light.text_primary = c(STONE_950);
+        light.text_secondary = c(STONE_700);
+        dark.surface_preview = c(STONE_950);
+        dark.text_primary = c(STONE_50);
+        dark.text_secondary = c(STONE_200);
+    }
+    (light, dark)
+}
+
+/// Use another accent colour, or put the page in or out of black and white,
+/// in every open window, fading over to it.
+pub fn set_colours(settings: &Settings, cx: &mut App) {
     let accent = settings.accent;
     let fade = !cx.reduce_motion();
     let mode = if cx.theme().is_dark() {
@@ -402,7 +426,7 @@ pub fn set_accent(settings: &Settings, cx: &mut App) {
     } else {
         ThemeMode::Light
     };
-    let (light, dark) = (Palette::light(accent), Palette::dark(accent));
+    let (light, dark) = palettes(settings);
     let palettes = cx.global_mut::<Palettes>();
     palettes.accent = accent;
     palettes.light = light;

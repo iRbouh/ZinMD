@@ -43,6 +43,38 @@ fn pointer_step(step: &str) -> Option<Vec<PlatformInput>> {
             prefer_character_input: false,
         })]);
     }
+    // `wheel:x,y,lines` turns a mouse wheel, `swipe:x,y,dy` moves two fingers
+    // on a trackpad, and `pinch:x,y,by` pinches there: 0.2 is a fifth closer.
+    if matches!(command, "wheel" | "swipe" | "pinch") {
+        let mut parts = at.split(',').map(|part| part.parse::<f32>().ok());
+        let (x, y, amount) = (parts.next()??, parts.next()??, parts.next()??);
+        let position = point(px(x), px(y));
+        let modifiers = Modifiers::default();
+        let moved = MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers,
+        };
+        let gesture = match command {
+            "pinch" => PlatformInput::Pinch(PinchEvent {
+                position,
+                delta: amount,
+                modifiers,
+                phase: TouchPhase::Moved,
+            }),
+            _ => PlatformInput::Scroll(ScrollEvent {
+                position,
+                delta: match command {
+                    "wheel" => ScrollDelta::Lines(point(0., amount)),
+                    _ => ScrollDelta::Pixels(point(px(0.), px(amount))),
+                },
+                modifiers,
+                touch_phase: TouchPhase::Moved,
+                ..Default::default()
+            }),
+        };
+        return Some(vec![PlatformInput::MouseMove(moved), gesture]);
+    }
     let button = match command {
         "move" => None,
         "click" | "press" => Some(MouseButton::Left),

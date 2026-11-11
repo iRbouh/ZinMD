@@ -11,17 +11,24 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::h_flex;
 use gpui_kit::component::text::{
     MarkdownNode, MarkdownParseContext, MarkdownPlugin, markdown_ast as mdast,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::{Subject, look_at, tool};
 use crate::theme::{self, Accent, ActivePalette as _, Palette, size};
 
 /// Pixels drawn per point, so diagrams stay sharp on Retina displays.
 const SCALE: f32 = 2.;
+/// How tall the words in a diagram are when it is shown at its natural size.
+const DRAWN_TEXT: f32 = 16.;
+/// The tallest a diagram is shown on the page, in lines of its own words.
+const TALLEST: f32 = 34.;
 
 /// A drawn diagram.
 #[derive(Clone)]
@@ -104,6 +111,7 @@ impl MarkdownPlugin for Mermaid {
     fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = *cx.palette();
         let frame = div()
+            .relative()
             .w_full()
             .flex()
             .flex_col()
@@ -114,7 +122,7 @@ impl MarkdownPlugin for Mermaid {
             .border_1()
             .border_color(p.border_subtle);
         let Some(source) = node.data::<Source>() else {
-            return frame;
+            return frame.into_any_element();
         };
 
         let key = (source.hash, cx.theme().is_dark(), theme::accent(cx));
@@ -122,6 +130,10 @@ impl MarkdownPlugin for Mermaid {
             // The colours the app is settling on, not ones caught partway through a fade.
             draw_in_background(source, key, &theme::settled(cx), cx);
         }
+        // A diagram is drawn with words 16 px tall. Shown at the size of the
+        // words around it, its labels read as part of the page.
+        let body = window.text_style().font_size.to_pixels(window.rem_size());
+        let scale = f32::from(body) / DRAWN_TEXT;
         let diagrams = cx.global::<Diagrams>();
         let previous = diagrams.latest.get(&source.start).cloned();
         match diagrams.entries.get(&key) {
@@ -132,11 +144,78 @@ impl MarkdownPlugin for Mermaid {
                 if shown < 1. {
                     window.request_animation_frame();
                 }
-                frame.child(picture.element(previous).opacity(shown))
+                // A click opens the diagram large over the page; while the
+                // pointer is over it, small buttons offer that and a copy.
+                let subject = Subject::Diagram {
+                    code: source.code.clone(),
+                    picture: picture.image.clone(),
+                    size: picture.size,
+                };
+                let (open, expand, copy, code) = (
+                    subject.clone(),
+                    subject.clone(),
+                    subject,
+                    source.code.clone(),
+                );
+                let tools = h_flex()
+                    .absolute()
+                    .top(px(8.))
+                    .right(px(8.))
+                    .gap(px(2.))
+                    .p(px(2.))
+                    .rounded(size::RADIUS_MD)
+                    .border_1()
+                    .border_color(p.border_subtle)
+                    .bg(p.surface_raised)
+                    .shadow_sm()
+                    .opacity(0.)
+                    .group_hover("diagram", |style| style.opacity(1.))
+                    .child(
+                        tool(("diagram-open", source.start), IconName::Expand, &p).on_click(
+                            move |_, window, cx| {
+                                cx.stop_propagation();
+                                look_at(expand.clone(), window, cx);
+                            },
+                        ),
+                    )
+                    .child(
+                        tool(("diagram-copy", source.start), IconName::Copy, &p).on_click(
+                            move |_, _, cx| {
+                                cx.stop_propagation();
+                                copy.copy(cx);
+                            },
+                        ),
+                    )
+                    .child(
+                        tool(("diagram-code", source.start), IconName::Code, &p).on_click(
+                            move |_, _, cx| {
+                                cx.stop_propagation();
+                                cx.write_to_clipboard(ClipboardItem::new_string(code.to_string()));
+                            },
+                        ),
+                    );
+                return frame
+                    .id(("diagram", source.start))
+                    .group("diagram")
+                    .cursor_pointer()
+                    .child(picture.element(scale, previous).opacity(shown))
+                    .child(tools)
+                    // Spreading two fingers on it opens it too, and the
+                    // same spread then goes on to zoom it.
+                    .on_pinch({
+                        let open = open.clone();
+                        move |event, window, cx| {
+                            if event.delta > 0. {
+                                look_at(open.clone(), window, cx);
+                            }
+                        }
+                    })
+                    .on_click(move |_, window, cx| look_at(open.clone(), window, cx))
+                    .into_any_element();
             }
             Some(Entry::Failed(error)) => frame
                 // Keep the last good picture in view while the source is mid-edit.
-                .children(previous.map(|picture| picture.element(None).opacity(0.45)))
+                .children(previous.map(|picture| picture.element(scale, None).opacity(0.45)))
                 .child(
                     div()
                         .w_full()
@@ -145,7 +224,7 @@ impl MarkdownPlugin for Mermaid {
                         .child(error.clone()),
                 ),
             _ => match previous {
-                Some(picture) => frame.child(picture.element(None)),
+                Some(picture) => frame.child(picture.element(scale, None)),
                 None => frame.child(
                     div()
                         .py(px(28.))
@@ -155,27 +234,37 @@ impl MarkdownPlugin for Mermaid {
                 ),
             },
         }
+        .into_any_element()
     }
 }
 
 impl Picture {
-    /// The picture at its natural size, shrinking to fit a narrower column.
-    /// `while_decoding` is shown for the frame or two the new picture needs to load.
-    fn element(&self, while_decoding: Option<Picture>) -> Div {
-        // The box takes its shape from the picture, so the layout is settled
-        // before the picture has loaded.
-        div()
-            .w_full()
-            .max_w(self.size.width)
-            .aspect_ratio(self.size.width / self.size.height)
-            .child(img(self.image.clone()).size_full().when_some(
-                while_decoding,
-                |image, previous| {
-                    image.with_loading(move || {
-                        img(previous.image.clone()).size_full().into_any_element()
-                    })
-                },
-            ))
+    /// The picture at `scale` times its natural size, shrinking to fit a
+    /// narrower column. `while_decoding` is shown for the frame or two the
+    /// new picture needs to load.
+    fn element(&self, scale: f32, while_decoding: Option<Picture>) -> Div {
+        // A very tall diagram is shown smaller, so the page still flows past
+        // it; it can be opened large to be read closely.
+        let tallest = px(TALLEST * DRAWN_TEXT * scale);
+        let scale = scale.min(tallest / self.size.height);
+        // Two boxes. The outer is as wide as the picture, or as the column
+        // when that is narrower. The inner takes its shape from the picture
+        // at that width, so the layout is settled before the picture loads.
+        // (One box doing both took its height from the column's width, and
+        // left any diagram narrower than the column with a blank under it.)
+        div().w_full().max_w(self.size.width * scale).child(
+            div()
+                .w_full()
+                .aspect_ratio(self.size.width / self.size.height)
+                .child(img(self.image.clone()).size_full().when_some(
+                    while_decoding,
+                    |image, previous| {
+                        image.with_loading(move || {
+                            img(previous.image.clone()).size_full().into_any_element()
+                        })
+                    },
+                )),
+        )
     }
 }
 
@@ -194,7 +283,7 @@ fn draw_in_background(source: &Source, key: Key, p: &Palette, cx: &mut App) {
     cx.spawn(async move |cx| {
         let drawn = cx
             .background_executor()
-            .spawn(async move { draw(&code) })
+            .spawn(async move { draw(&code, SCALE) })
             .await;
         cx.update(|cx| {
             let diagrams = cx.global_mut::<Diagrams>();
@@ -319,7 +408,35 @@ fn environment() -> Result<&'static merman::SvgEnvironment, String> {
         .map_err(Clone::clone)
 }
 
-fn draw(code: &str) -> Result<Picture, String> {
+/// A diagram drawn with characters, for pasting where pictures cannot go.
+pub fn as_text(code: &str) -> Result<String, String> {
+    use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Renderer};
+
+    let code = code.to_string();
+    let render = move || {
+        Renderer::new().render(RenderRequest::ascii(
+            &code,
+            OperationControl::new(),
+            AsciiRequest::default(),
+        ))
+    };
+    let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(render))
+        .map_err(|_| "this diagram could not be drawn".to_string())?
+        .map_err(|error| error.to_string())?;
+    match output {
+        RenderOutput::Ascii(Some(drawn)) => Ok(drawn.text),
+        _ => Err("this kind of diagram cannot be drawn with text".to_string()),
+    }
+}
+
+/// A diagram drawn again with `scale` pixels to the point, in the colours of
+/// `p`: sharper than the one on the page, for looking at closely or saving.
+/// Slow: call from a background thread.
+pub fn sharper(code: &str, p: &Palette, scale: f32) -> Result<(Arc<Image>, Size<Pixels>), String> {
+    draw(&themed(code, p), scale).map(|picture| (picture.image, picture.size))
+}
+
+fn draw(code: &str, scale: f32) -> Result<Picture, String> {
     use merman::svg::export::RasterOptions;
     use merman::{OperationControl, PngRequest, RenderOutput, RenderRequest, Renderer, SvgRequest};
 
@@ -328,7 +445,7 @@ fn draw(code: &str) -> Result<Picture, String> {
             environment: environment()?.clone(),
             ..Default::default()
         },
-        options: RasterOptions::default().with_scale(SCALE),
+        options: RasterOptions::default().with_scale(scale),
     };
     // The diagram engine is young: a diagram it trips over must not take the app down.
     let code = code.to_string();
@@ -344,7 +461,7 @@ fn draw(code: &str) -> Result<Picture, String> {
     let dimension = |at: usize| {
         png.bytes
             .get(at..at + 4)
-            .map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()) as f32 / SCALE)
+            .map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()) as f32 / scale)
     };
     let (Some(width), Some(height)) = (dimension(16), dimension(20)) else {
         return Err("the diagram came out empty".to_string());
@@ -360,6 +477,16 @@ fn draw(code: &str) -> Result<Picture, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_diagram_can_be_drawn_with_text() {
+        let text = super::as_text("flowchart LR\n  Source --> Parser --> GPU").unwrap();
+        for word in ["Source", "Parser", "GPU"] {
+            assert!(text.contains(word), "{word} is missing from:\n{text}");
+        }
+        // More than one line: boxes, not a list of names.
+        assert!(text.lines().count() >= 3, "{text}");
+    }
+
     use super::{draw, themed};
     use crate::theme::{Accent, Palette};
 
@@ -386,8 +513,8 @@ mod tests {
                 ("light", Palette::light(accent)),
                 ("dark", Palette::dark(accent)),
             ] {
-                let picture =
-                    draw(&themed(code, &palette)).unwrap_or_else(|error| panic!("{name}: {error}"));
+                let picture = draw(&themed(code, &palette), 2.)
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
                 let (width, height) = (
                     f32::from(picture.size.width),
                     f32::from(picture.size.height),
@@ -400,6 +527,6 @@ mod tests {
                 }
             }
         }
-        assert!(draw("not a diagram at all").is_err());
+        assert!(draw("not a diagram at all", 2.).is_err());
     }
 }

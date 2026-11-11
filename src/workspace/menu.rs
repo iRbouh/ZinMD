@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Transition, transition};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, TitleBar, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::hover::Hot;
 use super::panel::fading;
-use super::{Doc, ViewMode, Workspace};
+use super::{Doc, Mode, ViewMode, Workspace};
 use crate::system::shortcut;
 use crate::theme::{self, Accent, ActivePalette as _, Palette, size};
 use crate::ui::icon_button;
@@ -214,8 +215,25 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        // On a page it looks for words in what is being read; beside the
+        // editor, for a file by its name. The tip says which.
+        let reading = self.mode == Mode::Read;
+        let finding = reading && self.finding();
         self.menu_button("search", IconName::Search, p, window, cx)
-            .on_click(cx.listener(|this, _, window, cx| this.focus_search(window, cx)))
+            .when(finding, |button| button.text_color(p.text_primary))
+            .tooltip(move |window, cx| {
+                let says = match reading {
+                    true => concat!("Find on this page  ", shortcut!("F")),
+                    false => concat!("Find a file by its name  ", shortcut!("K")),
+                };
+                Tooltip::new(says).build(window, cx)
+            })
+            .on_click(cx.listener(|this, _, window, cx| match this.mode {
+                // A second click puts the field away again.
+                Mode::Read if this.finding() => this.close_find(window, cx),
+                Mode::Read => this.find_on_page(window, cx),
+                Mode::Edit => this.focus_search(window, cx),
+            }))
     }
 
     /// The circle that wears the accent colour. A click lets down the menu
@@ -526,6 +544,97 @@ impl Workspace {
             .child(end)
     }
 
+    /// What sits in the middle of a page's bar: smaller and bigger words with
+    /// their size between them, and the switch to black and white.
+    fn render_reading_controls(
+        &self,
+        worded: bool,
+        p: &Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let settings = *cx.global::<crate::settings::Settings>();
+        let sheet = super::frame::sheet_width(window.viewport_size());
+        let body = crate::preview::body_size(Some(sheet), settings.reading_scale);
+        let dark = cx.theme().is_dark();
+        let (strong, hover) = (p.text_primary, p.surface_hover);
+
+        let smaller = self
+            .menu_button("words-smaller", IconName::AArrowDown, p, window, cx)
+            .tooltip(|window, cx| {
+                Tooltip::new(concat!("Smaller words  ", shortcut!("−"))).build(window, cx)
+            })
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(super::FontSmaller), cx));
+        let bigger = self
+            .menu_button("words-bigger", IconName::AArrowUp, p, window, cx)
+            .tooltip(|window, cx| {
+                Tooltip::new(concat!("Bigger words  ", shortcut!("+"))).build(window, cx)
+            })
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(super::FontBigger), cx));
+        // The size itself, between them. A click goes back to the page's own.
+        let size_now = div()
+            .id("words-size")
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .w(px(34.))
+            .h(px(28.))
+            .rounded(size::RADIUS_SM)
+            .text_color(p.text_secondary)
+            .hover(move |style| style.bg(hover).text_color(strong))
+            .child(format!("{}", f32::from(body).round()))
+            .tooltip(|window, cx| {
+                Tooltip::new(concat!("The page's own size  ", shortcut!("0"))).build(window, cx)
+            })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(super::FontReset), cx));
+
+        // Black and white: lit while it is on, and saying in words what a
+        // click will do.
+        let on = settings.contrast;
+        let says = match (on, dark) {
+            (true, _) => "Back to the usual colours",
+            (false, false) => "Darker words on a paper-white page: sharper, with no glare",
+            (false, true) => "Lighter words on a near-black page: sharper, with no glare",
+        };
+        let contrast = h_flex()
+            .id("black-and-white")
+            .flex_none()
+            .h(px(28.))
+            .gap(px(6.))
+            .px(px(if worded { 9. } else { 6. }))
+            .rounded(size::RADIUS_SM)
+            .border_1()
+            .map(|button| match on {
+                true => button
+                    .border_color(p.accent_border)
+                    .bg(p.accent_soft)
+                    .text_color(p.accent_text),
+                false => button
+                    .border_color(transparent_black())
+                    .text_color(p.text_secondary)
+                    .hover(move |style| style.bg(hover).text_color(strong)),
+            })
+            .child(Icon::new(IconName::Contrast).size(px(15.)))
+            .when(worded, |button| button.child("Black & white"))
+            .tooltip(move |window, cx| Tooltip::new(says).build(window, cx))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(super::ToggleContrast), cx));
+
+        h_flex()
+            .id("page-menu-middle")
+            .gap(px(2.))
+            .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                this.reader.over_menu(*over, cx);
+            }))
+            .child(smaller)
+            .child(size_now)
+            .child(bigger)
+            .child(div().flex_none().w(px(8.)))
+            .child(contrast)
+    }
+
     /// The bar across the top of a page: the same ends as the editor's, with
     /// nothing between them. Its buttons are there while the pointer moves
     /// and go once the pointer has been still for a moment; the name stays.
@@ -623,6 +732,27 @@ impl Workspace {
             .child(div().flex_none().w(px(2.)))
             .child(edit);
 
+        // In the middle of the bar: how big the words are, and whether the
+        // page is in black and white. Only where the bar has the room.
+        let reading = (width >= px(620.)).then(|| {
+            let controls = self.render_reading_controls(width >= px(780.), &p, window, cx);
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .opacity(presence)
+                .child(controls)
+        });
+        // The name gives way before it runs under what is in the middle.
+        let start = start.when(reading.is_some(), |start| {
+            start.max_w(((width - px(300.)) / 2. - left).max(px(60.)))
+        });
+
         // Where the window's buttons are ours to draw they close the bar,
         // and stay when the rest goes: a window can always be shut.
         let buttons = window_buttons(&p, window);
@@ -634,9 +764,11 @@ impl Workspace {
             .h(size::TITLEBAR)
             .flex()
             .items_center()
+            .justify_between()
             .pl(left)
             .pr(if buttons.is_some() { px(0.) } else { EDGE })
             .child(start)
+            .children(reading)
             .child(end)
             .children(buttons.map(|buttons| buttons.ml(px(6.))))
     }

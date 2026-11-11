@@ -99,6 +99,13 @@ pub struct Settings {
     pub font_size: f32,
     /// Whether the app looks for new versions by itself.
     pub updates: bool,
+    /// How big the words of a page are, against the size the page would
+    /// give them: 1 is that size, 1.2 a fifth bigger.
+    pub reading_scale: f32,
+    /// Whether a page is set in black and white: the darkest words on the
+    /// lightest page in the light appearance, the other way round in the
+    /// dark one. Near black and near white, not the glare of the real ones.
+    pub contrast: bool,
 }
 
 impl Global for Settings {}
@@ -110,6 +117,8 @@ impl Default for Settings {
             font: EditorFont::JetBrainsMono,
             font_size: DEFAULT_FONT_SIZE,
             updates: true,
+            reading_scale: 1.,
+            contrast: false,
         }
     }
 }
@@ -145,6 +154,12 @@ impl Settings {
         if let Some(updates) = json["look_for_updates"].as_bool() {
             settings.updates = updates;
         }
+        if let Some(scale) = json["reading_text_scale"].as_f64() {
+            settings.reading_scale = clamp_scale(scale as f32);
+        }
+        if let Some(contrast) = json["black_and_white"].as_bool() {
+            settings.contrast = contrast;
+        }
         settings
     }
 
@@ -154,6 +169,8 @@ impl Settings {
             "editor_font": self.font.label(),
             "editor_font_size": self.font_size,
             "look_for_updates": self.updates,
+            "reading_text_scale": self.reading_scale,
+            "black_and_white": self.contrast,
         });
         serde_json::to_string_pretty(&json).unwrap_or_default()
     }
@@ -166,6 +183,18 @@ impl Settings {
         }
         std::fs::write(file, self.to_json()).ok();
     }
+}
+
+/// How far the words of a page can be shrunk or grown, and by how much a
+/// step changes them.
+const READING_SCALES: std::ops::RangeInclusive<f32> = 0.75..=1.75;
+/// One step is a sixteenth: a pixel, for words 16 pixels tall.
+pub const READING_STEP: f32 = 0.0625;
+
+pub fn clamp_scale(scale: f32) -> f32 {
+    // Kept to whole steps, so ten steps up and ten down end where they began.
+    ((scale / READING_STEP).round() * READING_STEP)
+        .clamp(*READING_SCALES.start(), *READING_SCALES.end())
 }
 
 pub fn clamp_size(size: f32) -> f32 {
@@ -188,6 +217,8 @@ mod tests {
             font: EditorFont::FiraCode,
             font_size: 15.,
             updates: false,
+            reading_scale: 1.25,
+            contrast: true,
         };
         assert_eq!(Settings::parse(&settings.to_json()), settings);
     }
@@ -207,6 +238,8 @@ mod tests {
                 font: EditorFont::JetBrainsMono,
                 font_size: 32.,
                 updates: true,
+                reading_scale: 1.,
+                contrast: false,
             }
         );
         // Settings written before there were colours to choose from still load.
@@ -219,6 +252,8 @@ mod tests {
                 font_size: 14.,
                 // Looking for new versions is on unless it was turned off.
                 updates: true,
+                reading_scale: 1.,
+                contrast: false,
             }
         );
     }

@@ -44,6 +44,14 @@ pub fn only_command(held: &gpui_kit::Modifiers) -> bool {
     command && !(other || held.alt || held.shift)
 }
 
+/// Whether the main command key is among the keys held.
+pub fn command_held(held: &gpui_kit::Modifiers) -> bool {
+    match cfg!(target_os = "macos") {
+        true => held.platform,
+        false => held.control,
+    }
+}
+
 /// What showing a file where it lives is called.
 pub const REVEAL: &str = if cfg!(target_os = "macos") {
     "Show in Finder"

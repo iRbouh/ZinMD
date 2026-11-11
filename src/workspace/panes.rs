@@ -6,15 +6,18 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::animation::ease_out_cubic;
-use gpui_kit::component::clipboard::Clipboard;
+use gpui_kit::base::text::TextView;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::h_flex;
 use gpui_kit::component::input::{Editor, Position};
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::reader::{PAGE_BOTTOM, PAGE_TOP};
 use super::{Doc, Mode, ViewMode, Workspace};
 use crate::theme::{ActivePalette as _, Palette, size};
+use crate::ui::copy_button;
 use crate::{doc, files, motion, preview};
 
 /// Widest the text column of the preview gets, for comfortable line lengths.
@@ -247,18 +250,83 @@ impl Workspace {
                 .map(Path::to_path_buf),
         );
         let (on_task, on_link) = (cx.weak_entity(), cx.weak_entity());
+        let (quiet, palette) = (p.text_tertiary, *p);
+        // How big the words are: the page's own size for its width, times
+        // what the reader asked for.
+        let scale = cx.global::<crate::settings::Settings>().reading_scale;
+        let body = preview::body_size(sheet, scale);
 
         let text = TextView::new(&doc.preview)
             .scrollable(true)
             .selectable(true)
-            .style(preview::style(p))
+            .style(preview::style(p, body, cx.theme().is_dark()))
             .markdown_extensions(preview::extensions())
             .image_source(move |uri| preview::image_source(uri, folder.as_deref()))
-            .code_block_actions(|code, _, _| {
-                // The block's place in the source tells its copy button apart from the others.
+            // On a block of code: what language it is in, and a button
+            // that copies it.
+            .code_block_actions(move |code, window, cx| {
+                // The block's place in the source tells its button apart from the others.
                 let at = code.span.map_or(0, |span| span.start);
-                Clipboard::new(("copy-code", at)).value(code.code())
+                let text = code.code();
+                h_flex()
+                    .gap(px(4.))
+                    .pl(px(10.))
+                    .children(code.lang().filter(|lang| !lang.is_empty()).map(|lang| {
+                        div()
+                            .text_size(size::FONT_UI_SMALL)
+                            .text_color(quiet)
+                            .child(lang)
+                    }))
+                    .child(copy_button(
+                        ("copy-code", at),
+                        None,
+                        move || text.to_string(),
+                        &palette,
+                        window,
+                        cx,
+                    ))
             })
+            // Under a table: copy it as Markdown, or as rows a spreadsheet takes.
+            .table_actions(move |table, window, cx| {
+                let at = table.span.as_ref().map_or(0, |span| span.start);
+                let rows = std::iter::once(&table.headers)
+                    .chain(table.rows.iter())
+                    .map(|row| {
+                        row.iter()
+                            .map(|cell| match cell.contains([',', '"', '\n']) {
+                                true => format!("\"{}\"", cell.replace('"', "\"\"")),
+                                false => cell.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let markdown = table.markdown.clone();
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap(px(4.))
+                    .pt(px(6.))
+                    .child(copy_button(
+                        ("copy-table", at),
+                        Some("Copy as Markdown"),
+                        move || markdown.clone(),
+                        &palette,
+                        window,
+                        cx,
+                    ))
+                    .child(copy_button(
+                        ("copy-rows", at),
+                        Some("Copy as CSV"),
+                        move || rows.clone(),
+                        &palette,
+                        window,
+                        cx,
+                    ))
+            })
+            // Over a link: where it leads.
+            .link_tooltip(|url, window, cx| Tooltip::new(url.clone()).build(window, cx))
             .on_task_toggle(move |event, window, cx| {
                 on_task
                     .update(cx, |this, cx| {
@@ -271,8 +339,10 @@ impl Workspace {
                     .update(cx, |this, cx| this.follow_link(url, window, cx))
                     .ok();
             })
-            .text_size(size::FONT_BODY)
-            .line_height(relative(1.65))
+            .text_size(body)
+            // Guides for reading on a screen agree on lines 1.4 to 1.6 times
+            // as tall as the words. The page sits near the top of that.
+            .line_height(relative(1.55))
             .px(margin)
             .pt(clear)
             .pb(foot);

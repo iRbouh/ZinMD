@@ -11,7 +11,8 @@ readme = "README.md"
 # `tree-sitter-languages` turns on syntax highlighting for every language the kit knows.
 gpui-kit = { version = "0.9.1", features = ["tree-sitter-languages"] }
 # Mermaid diagrams, laid out and drawn natively.
-merman = { version = "0.9.3", features = ["png", "native-fonts"] }
+# `ascii` draws a diagram with characters, to paste where pictures cannot go.
+merman = { version = "0.9.3", features = ["png", "native-fonts", "ascii"] }
 # LaTeX math, laid out natively and drawn as vector outlines.
 ratex-layout = "0.1.15"
 ratex-parser = "0.1.15"
@@ -39,6 +40,7 @@ gpui_platform_shot = { package = "gpui-pre-platform", version = "=0.3.12", optio
 trash = { version = "5", default-features = false, features = ["freedesktop", "coinit_apartmentthreaded"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.10"
+unicode-normalization = "0.1"
 
 # The window changes shape between the page and the editor, and keeps the
 # proportions of a sheet of paper while it is a page. AppKit is asked directly.

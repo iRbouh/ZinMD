@@ -3,8 +3,14 @@
 //! A plain scan: read each file and look at each line. Notes folders are small
 //! enough that this answers faster than a keystroke, and it needs no index to
 //! build or keep fresh.
+//!
+//! A line is found when it holds what was typed, whatever its case and
+//! accents, or each of its words in any order. When no line does, lines that
+//! nearly do are found instead: a slip of the finger is forgiven.
 
 use std::path::PathBuf;
+
+use crate::matching::{self, Answer, Folded, Room, Wanted};
 
 /// One line that contains what was searched for.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,13 +27,16 @@ const LARGEST_FILE: u64 = 4 * 1024 * 1024;
 /// How much of a long line is shown.
 const SHOWN: usize = 110;
 
-/// Find `query` in `files`, ignoring case. Stops after `limit` hits.
+/// Find `query` in `files`. Stops after `limit` hits.
 pub fn run(files: &[PathBuf], query: &str, limit: usize) -> Vec<Hit> {
-    let query = query.trim().to_lowercase();
-    let mut hits = Vec::new();
-    if query.is_empty() {
-        return hits;
+    let wanted = Wanted::new(query);
+    if wanted.is_empty() {
+        return Vec::new();
     }
+    // Lines that nearly answer are kept apart, and only until one answers:
+    // they are what is shown when none does.
+    let (mut hits, mut nearly) = (Vec::new(), Vec::new());
+    let (mut folded, mut room) = (Folded::default(), Room::default());
     for path in files {
         if std::fs::metadata(path).is_ok_and(|file| file.len() > LARGEST_FILE) {
             continue;
@@ -36,20 +45,30 @@ pub fn run(files: &[PathBuf], query: &str, limit: usize) -> Vec<Hit> {
             continue;
         };
         for (line, content) in text.lines().enumerate() {
-            let Some(at) = content.to_lowercase().find(&query) else {
+            folded.fill(content);
+            let near = hits.is_empty() && nearly.len() < limit;
+            let Some((at, answer)) = matching::line_answers(&folded, &wanted, near, &mut room)
+            else {
                 continue;
             };
-            hits.push(Hit {
+            let hit = Hit {
                 path: path.clone(),
                 line: line as u32,
                 text: excerpt(content, at),
-            });
+            };
+            match answer {
+                Answer::Close => nearly.push(hit),
+                _ => hits.push(hit),
+            }
             if hits.len() >= limit {
                 return hits;
             }
         }
     }
-    hits
+    match hits.is_empty() {
+        true => nearly,
+        false => hits,
+    }
 }
 
 /// A long line cut down to the part around byte `at`.
@@ -58,7 +77,7 @@ fn excerpt(line: &str, at: usize) -> String {
     if line.chars().count() <= SHOWN {
         return line.to_string();
     }
-    // Lower-casing can shift byte positions slightly; land on a character either way.
+    // `at` counts from before the trim; land on a character either way.
     let chars: Vec<char> = line.chars().collect();
     let hit = line
         .char_indices()
@@ -105,6 +124,18 @@ mod tests {
         assert_eq!(hits[0].text, "The Quick brown fox.");
 
         assert_eq!(run(&[a.clone(), b.clone()], "quick", 2).len(), 2);
+
+        // Words in any order, accents or not, and a slip of the finger.
+        let lines = |query: &str| -> Vec<u32> {
+            run(&[a.clone(), b.clone()], query, 10)
+                .iter()
+                .map(|hit| hit.line)
+                .collect()
+        };
+        assert_eq!(lines("fox quick"), [2]);
+        assert_eq!(lines("fóx"), [2]);
+        assert_eq!(lines("nothign"), [3]);
+        assert!(lines("fox again").is_empty());
         assert!(run(&[a, b], "   ", 10).is_empty());
         std::fs::remove_dir_all(&folder).unwrap();
     }

@@ -125,6 +125,14 @@ impl Workspace {
             (IconName::AArrowUp, "Bigger text", Box::new(FontBigger)),
             (IconName::AArrowDown, "Smaller text", Box::new(FontSmaller)),
             (
+                IconName::Contrast,
+                match cx.global::<crate::settings::Settings>().contrast {
+                    true => "Black and white: back to the usual colours",
+                    false => "Black and white: sharper words, with no glare",
+                },
+                Box::new(ToggleContrast),
+            ),
+            (
                 IconName::CircleCheck,
                 "Check for updates",
                 Box::new(CheckForUpdates),

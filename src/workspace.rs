@@ -4,6 +4,7 @@
 mod backup;
 mod disk;
 mod fileops;
+mod find;
 mod frame;
 mod hover;
 mod menu;
@@ -13,6 +14,7 @@ mod panes;
 mod reader;
 mod statusbar;
 mod updates;
+mod viewer;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +69,11 @@ actions!(
         RevealFile,
         CheckForUpdates,
         ToggleUpdates,
+        LookCloser,
+        ToggleContrast,
+        FindOnPage,
+        FindNext,
+        FindBefore,
         CopyFilePath,
         CopyFileContent,
         PreviousSection,
@@ -110,6 +117,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(command!("-"), FontSmaller, None),
         KeyBinding::new(command!("0"), FontReset, None),
         KeyBinding::new(command!("q"), Quit, None),
+        // On a page. In the editor these keys are the editor's own search.
+        KeyBinding::new(command!("f"), FindOnPage, None),
+        KeyBinding::new(command!("g"), FindNext, None),
+        KeyBinding::new(command!("shift-g"), FindBefore, None),
     ]);
     // Reached only when no window is there to ask about unsaved changes.
     cx.on_action(|_: &Quit, cx| cx.quit());
@@ -150,6 +161,7 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Select All", edit::SelectAll),
             MenuItem::separator(),
             MenuItem::action("Find…", edit::Search),
+            MenuItem::action("Find on the Page…", FindOnPage),
             MenuItem::action("Find in All Files…", FindInFolder),
         ]),
         Menu::new("View").items([
@@ -171,6 +183,7 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Bigger Text", FontBigger),
             MenuItem::action("Smaller Text", FontSmaller),
             MenuItem::action("Default Text Size", FontReset),
+            MenuItem::action("Black and White", ToggleContrast),
             MenuItem::separator(),
             MenuItem::action("Font: JetBrains Mono", UseJetBrainsMono),
             MenuItem::action("Font: Fira Code", UseFiraCode),
@@ -310,6 +323,14 @@ pub struct Workspace {
     /// says it is up.
     update: updates::Update,
     update_shown: bool,
+    /// A picture or a diagram opened large over the page, and whether it is
+    /// up or on its way out.
+    viewer: Option<viewer::Viewer>,
+    viewer_open: bool,
+    /// The field for finding words on the page, and whether it is up.
+    find: Option<find::Find>,
+    find_open: bool,
+    _viewer_save: Task<()>,
     _update_look: Task<()>,
     _update_work: Task<()>,
     _update_hide: Task<()>,
@@ -397,6 +418,11 @@ impl Workspace {
             install: crate::update::Install::detect(),
             update: updates::Update::Quiet,
             update_shown: false,
+            viewer: None,
+            viewer_open: false,
+            find: None,
+            find_open: false,
+            _viewer_save: Task::ready(()),
             _update_look: Task::ready(()),
             _update_work: Task::ready(()),
             _update_hide: Task::ready(()),
@@ -1282,11 +1308,12 @@ impl Workspace {
         let mut settings = before;
         change(&mut settings);
         settings.font_size = settings::clamp_size(settings.font_size);
+        settings.reading_scale = settings::clamp_scale(settings.reading_scale);
         if settings == before {
             return;
         }
-        if settings.accent != before.accent {
-            theme::set_accent(&settings, cx);
+        if (settings.accent, settings.contrast) != (before.accent, before.contrast) {
+            theme::set_colours(&settings, cx);
         }
         if (settings.font, settings.font_size) != (before.font, before.font_size) {
             theme::set_editor_font(&settings, cx);
@@ -1493,6 +1520,12 @@ impl Workspace {
             "update" => self.debug_update(argument, cx),
             // What restarting into a new version does before it leaves.
             "backup" => self.back_up_now(),
+            // `look:diagram` opens a diagram large over the page, `look:<file>`
+            // a picture, as a click on either does.
+            "look" => self.debug_look(argument, window, cx),
+            // `seek:<words>` looks for words on the page, as typing them
+            // into the field for finding does.
+            "seek" => self.debug_find(argument, window, cx),
             // File actions on a row of the side panel: `context:<name>` picks the
             // row as a right-click would, then `newfile`, `rename`, `trash` act on
             // it; `name:<text>` types a name, and `key:enter` confirms it.
@@ -1550,6 +1583,8 @@ impl Workspace {
                 self.update_settings(|s| s.accent = accent.unwrap_or(s.accent), cx);
             }
             "colours" => self.colours_open = !self.colours_open,
+            // Put the page in black and white, or back.
+            "contrast" => self.update_settings(|s| s.contrast = !s.contrast, cx),
             "font" => {
                 let font = EditorFont::ALL
                     .into_iter()
@@ -1691,6 +1726,17 @@ impl Render for Workspace {
         let palette = self.render_palette(window, cx);
         let peek = self.render_peek(window, cx);
         let update = self.render_update(window, cx);
+        let viewer = self.render_viewer(window, cx);
+        let find = self.render_find(window, cx);
+        // Pictures named relative to the document are looked for beside it.
+        let shown = crate::preview::Shown {
+            folder: self
+                .active_doc()
+                .and_then(|doc| doc.path.as_deref()?.parent().map(Path::to_path_buf)),
+        };
+        if cx.try_global::<crate::preview::Shown>() != Some(&shown) {
+            cx.set_global(shown);
+        }
 
         v_flex()
             .id("workspace")
@@ -1769,14 +1815,37 @@ impl Render for Workspace {
                 cx.listener(|this, _: &FindInFolder, window, cx| this.open_search(window, cx)),
             )
             .on_action(cx.listener(|this, _: &ExportHtml, window, cx| this.export_html(window, cx)))
+            // Bigger and smaller act on what is being looked at: the words
+            // of the page while reading, the editor's text while editing.
             .on_action(cx.listener(|this, _: &FontBigger, _, cx| {
-                this.update_settings(|s| s.font_size += 1., cx)
+                let reading = this.mode == Mode::Read;
+                this.update_settings(
+                    |s| match reading {
+                        true => s.reading_scale += settings::READING_STEP,
+                        false => s.font_size += 1.,
+                    },
+                    cx,
+                )
             }))
             .on_action(cx.listener(|this, _: &FontSmaller, _, cx| {
-                this.update_settings(|s| s.font_size -= 1., cx)
+                let reading = this.mode == Mode::Read;
+                this.update_settings(
+                    |s| match reading {
+                        true => s.reading_scale -= settings::READING_STEP,
+                        false => s.font_size -= 1.,
+                    },
+                    cx,
+                )
             }))
             .on_action(cx.listener(|this, _: &FontReset, _, cx| {
-                this.update_settings(|s| s.font_size = settings::DEFAULT_FONT_SIZE, cx)
+                let reading = this.mode == Mode::Read;
+                this.update_settings(
+                    |s| match reading {
+                        true => s.reading_scale = 1.,
+                        false => s.font_size = settings::DEFAULT_FONT_SIZE,
+                    },
+                    cx,
+                )
             }))
             .on_action(cx.listener(|this, _: &UseJetBrainsMono, _, cx| {
                 this.update_settings(|s| s.font = EditorFont::JetBrainsMono, cx)
@@ -1791,6 +1860,15 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
                 this.look_for_update(true, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &LookCloser, _, cx| this.look_closer(cx)))
+            .on_action(cx.listener(|this, _: &ToggleContrast, _, cx| {
+                this.update_settings(|settings| settings.contrast = !settings.contrast, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &FindOnPage, window, cx| this.find_on_page(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_step(1, cx)))
+            .on_action(cx.listener(|this, _: &FindBefore, _, cx| this.find_step(-1, cx)))
             .on_action(cx.listener(|this, _: &ToggleUpdates, _, cx| {
                 this.update_settings(|settings| settings.updates = !settings.updates, cx)
             }))
@@ -1804,7 +1882,16 @@ impl Render for Workspace {
                     cx.stop_propagation();
                 }
             }))
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                // A picture open over the page has the keyboard to itself.
+                if this.viewer_key(&event.keystroke, window, cx) {
+                    return cx.stop_propagation();
+                }
+                // Escape puts the field for finding words away.
+                if this.finding() && event.keystroke.key == "escape" {
+                    this.close_find(window, cx);
+                    return cx.stop_propagation();
+                }
                 if this.colours_open && event.keystroke.key == "escape" {
                     this.colours_open = false;
                     cx.notify();
@@ -1874,6 +1961,8 @@ impl Render for Workspace {
             .child(body)
             .children(peek)
             .children(palette)
+            .children(find)
+            .children(viewer)
             .children(update)
     }
 }

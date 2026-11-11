@@ -20,7 +20,9 @@ impl log::Log for Reports {
     fn enabled(&self, about: &log::Metadata) -> bool {
         // Everything that went wrong, and what the window toolkit did; the
         // rest have a great deal to say about very little.
-        about.level() <= log::Level::Warn
+        // (The library that draws diagrams warns about every shape it
+        // draws; none of it is news.)
+        (about.level() <= log::Level::Warn && !about.target().starts_with("usvg"))
             || (about.level() == log::Level::Info && about.target().starts_with("gpui"))
     }
 

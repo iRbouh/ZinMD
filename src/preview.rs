@@ -6,15 +6,16 @@
 //! what lets the editor and the preview scroll together.
 
 mod callout;
+pub mod figure;
 pub mod frontmatter;
 pub mod math;
 pub mod mermaid;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use gpui_kit::component::text::{MarkdownExtensions, TextViewStyle};
+use gpui_kit::base::text::{MarkdownExtensions, TextViewStyle};
 use gpui_kit::*;
 
 use crate::theme::{Palette, size};
@@ -33,7 +34,8 @@ pub fn extensions() -> MarkdownExtensions {
                 .plugin(frontmatter::FrontMatter)
                 .plugin(math::InlineMath)
                 .plugin(math::BlockMath)
-                .plugin(mermaid::Mermaid),
+                .plugin(mermaid::Mermaid)
+                .plugin(figure::Figure),
         )
     });
     EXTENSIONS.clone()
@@ -46,6 +48,110 @@ pub fn parse_options() -> markdown::ParseOptions {
     options.constructs.math_text = true;
     options.constructs.math_flow = true;
     options
+}
+
+/// The document on show: what its pictures are named relative to.
+#[derive(Default, PartialEq)]
+pub struct Shown {
+    pub folder: Option<PathBuf>,
+}
+
+impl Global for Shown {}
+
+/// Something on the page that can be looked at closely: opened large over
+/// the page, zoomed, copied, saved.
+#[derive(Clone)]
+pub enum Subject {
+    /// A picture from the document. `file` is where it is on disk, if it is.
+    Picture {
+        source: ImageSource,
+        name: SharedString,
+        file: Option<PathBuf>,
+    },
+    /// A diagram: its source, the picture drawn of it, and how big that
+    /// picture is at its natural size.
+    Diagram {
+        code: SharedString,
+        picture: Arc<Image>,
+        size: Size<Pixels>,
+    },
+}
+
+impl Subject {
+    /// The picture as something the clipboard can hold. `None` for a picture
+    /// that lives on the web: only its address is at hand.
+    pub fn image(&self) -> Option<Image> {
+        match self {
+            Subject::Diagram { picture, .. } => Some(picture.as_ref().clone()),
+            Subject::Picture {
+                source: ImageSource::Image(image),
+                ..
+            } => Some(image.as_ref().clone()),
+            Subject::Picture {
+                file: Some(file), ..
+            } => {
+                let kind = file.extension()?.to_str()?.to_ascii_lowercase();
+                let format = match kind.as_str() {
+                    "png" => ImageFormat::Png,
+                    "jpg" | "jpeg" => ImageFormat::Jpeg,
+                    "gif" => ImageFormat::Gif,
+                    "webp" => ImageFormat::Webp,
+                    "svg" => ImageFormat::Svg,
+                    "bmp" => ImageFormat::Bmp,
+                    "tif" | "tiff" => ImageFormat::Tiff,
+                    _ => return None,
+                };
+                Some(Image::from_bytes(format, std::fs::read(file).ok()?))
+            }
+            Subject::Picture { .. } => None,
+        }
+    }
+
+    /// Put the picture on the clipboard. Says whether it could.
+    pub fn copy(&self, cx: &mut App) -> bool {
+        match self.image() {
+            Some(image) => {
+                cx.write_to_clipboard(ClipboardItem::new_image(&image));
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// What was last asked to be looked at closely, until the window takes it.
+#[derive(Default)]
+pub struct Looking(pub Option<Subject>);
+
+impl Global for Looking {}
+
+/// Ask for `subject` to be opened large over the page.
+pub fn look_at(subject: Subject, window: &mut Window, cx: &mut App) {
+    cx.set_global(Looking(Some(subject)));
+    window.dispatch_action(Box::new(crate::workspace::LookCloser), cx);
+}
+
+/// A small round button that sits on a picture or a diagram while the
+/// pointer is over it.
+pub fn tool(
+    id: impl Into<ElementId>,
+    icon: gpui_kit::assets::IconName,
+    p: &Palette,
+) -> Stateful<Div> {
+    let (strong, hover) = (p.text_primary, p.surface_hover);
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(32.))
+        .rounded(size::RADIUS_SM)
+        .text_color(p.text_secondary)
+        .hover(move |style| style.bg(hover).text_color(strong))
+        .active(|style| style.opacity(0.7))
+        .cursor_pointer()
+        .child(gpui_kit::component::Icon::new(icon).size(px(16.)))
 }
 
 /// Where the picture behind an image link comes from.
@@ -102,24 +208,84 @@ fn decode_data_url(link: &str) -> Option<Image> {
     Some(Image::from_bytes(format, bytes))
 }
 
-/// Type sizes and spacing of rendered Markdown.
-pub fn style(p: &Palette) -> TextViewStyle {
-    // Table rows sit on the page itself; only the header row is tinted.
-    let table = StyleRefinement::default().bg(p.surface_preview);
-    let code = HighlightStyle {
+/// The size of the words of a page whose text column is `sheet` wide.
+///
+/// A line is easy to read at 60 to 85 characters. The column is the shape of
+/// a sheet of paper and grows with the window, so past a certain width the
+/// words grow with it, the way a page held closer looks bigger, instead of
+/// the lines growing ever longer. `scale` is the reader's own choice on top.
+pub fn body_size(sheet: Option<Pixels>, scale: f32) -> Pixels {
+    // A character of the body font is about half as wide as the font is tall.
+    const CHARACTERS: f32 = 84.;
+    let fitted = sheet.map_or(size::FONT_BODY, |sheet| {
+        (sheet / (CHARACTERS * 0.49)).clamp(size::FONT_BODY, size::FONT_BODY_LARGEST)
+    });
+    (fitted * scale).round()
+}
+
+/// Type sizes and spacing of rendered Markdown, for words `body` tall.
+///
+/// Everything is a multiple of the body size, so the page keeps its
+/// proportions at any size: a heading has more room above it than below, the
+/// more the higher its level, and paragraphs sit a little under a line apart.
+pub fn style(p: &Palette, body: Pixels, dark: bool) -> TextViewStyle {
+    let radius = |mut style: StyleRefinement| {
+        let corner: AbsoluteLength = size::RADIUS_MD.into();
+        style.corner_radii.top_left = Some(corner);
+        style.corner_radii.top_right = Some(corner);
+        style.corner_radii.bottom_left = Some(corner);
+        style.corner_radii.bottom_right = Some(corner);
+        style
+    };
+    let inline_code = HighlightStyle {
         background_color: Some(p.surface_hover),
         ..Default::default()
     };
+    // The kit measures gaps in rems, which are 16 px whatever the text size.
+    let lines = |of_body: f32| rems(f32::from(body) * of_body / 16.);
     TextViewStyle::default()
-        .inline_code(code)
-        .paragraph_gap(rems(1.))
-        .table(table)
-        .heading_font_size(|level, _| match level {
-            1 => size::FONT_H1,
-            2 => size::FONT_H2,
-            3 => size::FONT_H3,
-            _ => size::FONT_BODY,
+        .with_foreground(p.text_primary)
+        .with_muted_foreground(p.text_secondary)
+        .with_link(p.accent_text)
+        .with_selection(p.accent.opacity(0.28))
+        .with_code_background(p.surface_sunken)
+        .with_border(p.border_subtle)
+        .with_dark(dark)
+        .with_inline_code(inline_code)
+        .with_paragraph_gap(lines(1.))
+        // The kit already gives a heading a gap that depends on what comes
+        // before it; this adds to that gap, more for the higher levels, so a
+        // new section is seen coming. The room is an unseen border: the
+        // kit's own gap is padding, which a second padding would replace, and
+        // a margin is left out when the page works out how tall a block is.
+        .with_heading(move |level| {
+            let (size, above) = match level {
+                1 => (2., 0.),
+                2 => (1.4, 0.7),
+                3 => (1.16, 0.6),
+                _ => (1., 0.5),
+            };
+            StyleRefinement::default()
+                .text_size(body * size)
+                .border_t(body * above)
+                .border_color(transparent_black())
         })
+        // Code is set a little smaller than the words around it, and grows
+        // with them.
+        .with_code_block(radius(
+            StyleRefinement::default()
+                .text_size(body * 0.87)
+                .px(body * 1.1)
+                .pb(body * 0.9),
+        ))
+        // Table rows sit on the page itself; only the header row is tinted.
+        .with_table(radius(StyleRefinement::default().bg(p.surface_preview)))
+        .with_table_head(
+            StyleRefinement::default()
+                .bg(p.surface_sunken)
+                .text_color(p.text_secondary),
+        )
+        .with_table_row_hover(p.surface_hover.opacity(0.5))
 }
 
 /// The source lines each top-level block of a document starts on, in order.
