@@ -33,36 +33,45 @@ use crate::theme::{ActivePalette as _, Palette};
 use crate::{motion, preview};
 
 /// How wide and tall a small page is, the room between two, and around
-/// them all in the bar.
-const WIDE: Pixels = px(112.);
-const TALL: Pixels = px(148.);
-const GAP: Pixels = px(14.);
-const PAD: Pixels = px(16.);
+/// them all in the bar. The drawing's sizes, a little under half as big
+/// again: big enough to tell one page from another at a glance.
+const WIDE: Pixels = px(156.);
+const TALL: Pixels = px(206.);
+const GAP: Pixels = px(20.);
+const PAD: Pixels = px(22.);
 /// What is under a small page: its name.
-const UNDER: Pixels = px(26.);
+const UNDER: Pixels = px(34.);
 /// How far a small page goes on past the edge of its sheet, unseen.
 const BEYOND: Pixels = px(20.);
 /// How far the plate under the chosen page reaches past it.
-const PLATE: Pixels = px(8.);
-/// How many small pages there are to a row, and the room between two rows.
+const PLATE: Pixels = px(10.);
+/// How many small pages there are to a row at most, and the room between
+/// two rows.
 const ACROSS: usize = 7;
-const BETWEEN: Pixels = px(10.);
+const BETWEEN: Pixels = px(12.);
 /// Room around the bar, in a window that is otherwise clear, for its shadow.
 const SHADE: Pixels = px(72.);
 
-/// How big the bar is for `count` papers.
-fn bar_size(count: usize) -> Size<Pixels> {
-    let across = count.clamp(1, ACROSS);
-    let rows = count.div_ceil(ACROSS).max(1);
+/// How many small pages go in a row on a display this wide.
+fn across_on(display: Pixels) -> usize {
+    let room = display - SHADE * 2. - PAD * 2. + GAP;
+    ((room / (WIDE + GAP)).floor() as usize).clamp(1, ACROSS)
+}
+
+/// How big the bar is for `count` papers, `across` to a row. The plate
+/// under a page is as far from the bar's edge above it as below.
+fn bar_size(count: usize, across: usize) -> Size<Pixels> {
+    let rows = count.div_ceil(across).max(1);
+    let across = count.clamp(1, across);
     size(
         PAD * 2. + WIDE * across as f32 + GAP * (across - 1) as f32,
-        PAD * 2. - px(6.) + (TALL + UNDER) * rows as f32 + BETWEEN * (rows - 1) as f32,
+        PAD * 2. + px(2.) - PLATE + (TALL + UNDER) * rows as f32 + BETWEEN * (rows - 1) as f32,
     )
 }
 
 /// Where in the bar the small page of the paper numbered `at` is.
-fn place_of(at: usize) -> Point<Pixels> {
-    let (along, down) = (at % ACROSS, at / ACROSS);
+fn place_of(at: usize, across: usize) -> Point<Pixels> {
+    let (along, down) = (at % across, at / across);
     point(
         PAD + (WIDE + GAP) * along as f32,
         PAD + (TALL + UNDER + BETWEEN) * down as f32,
@@ -177,6 +186,8 @@ pub(super) struct Switcher {
     from: AnyWindowHandle,
     /// Whether Control is being held: letting go of it chooses.
     held: bool,
+    /// How many small pages there are to a row.
+    across: usize,
     focus: FocusHandle,
     /// Looks, while Control is held, for it being let go of.
     _watch: Task<()>,
@@ -352,7 +363,14 @@ fn open_switcher(
 ) {
     // The window is as big as the bar and its shadow, in the middle of the
     // display, and clear: the bar is all that is seen of it.
-    let bar = bar_size(briefs.len());
+    let wide = cx
+        .displays()
+        .into_iter()
+        .find(|screen| Some(screen.id()) == display)
+        .or_else(|| cx.primary_display())
+        .map_or(px(1440.), |screen| screen.bounds().size.width);
+    let across = across_on(wide);
+    let bar = bar_size(briefs.len(), across);
     let room = size(bar.width + SHADE * 2., bar.height + SHADE * 2.);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(display, room, cx))),
@@ -370,7 +388,7 @@ fn open_switcher(
     let mut made = None;
     let opened = cx
         .open_window(options, |window, cx| {
-            let switcher = cx.new(|cx| Switcher::new(briefs, from, held, window, cx));
+            let switcher = cx.new(|cx| Switcher::new(briefs, from, held, across, window, cx));
             made = Some(switcher.clone());
             // Two things would make a box round the bar, a window with a
             // window in it. The system draws a shadow and an edge round the
@@ -402,6 +420,7 @@ impl Switcher {
         briefs: Vec<(AnyWindowHandle, Brief)>,
         from: AnyWindowHandle,
         held: bool,
+        across: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -456,6 +475,7 @@ impl Switcher {
             pointed: None,
             from,
             held,
+            across,
             focus: cx.focus_handle(),
             _watch: watch,
         }
@@ -551,8 +571,8 @@ impl Switcher {
             "tab" if key.modifiers.shift => self.step(-1, cx),
             "tab" | "right" => self.step(1, cx),
             "left" => self.step(-1, cx),
-            "down" => self.step(ACROSS as isize, cx),
-            "up" => self.step(-(ACROSS as isize), cx),
+            "down" => self.step(self.across as isize, cx),
+            "up" => self.step(-(self.across as isize), cx),
             "enter" | "space" => self.choose(window, cx),
             "escape" => self.leave(None, window, cx),
             "w" => self.close(self.chosen, window, cx),
@@ -628,7 +648,7 @@ impl Switcher {
             .relative()
             .w(WIDE)
             .h(TALL)
-            .rounded(px(6.))
+            .rounded(px(8.))
             .overflow_hidden()
             .bg(p.surface_preview)
             .border_1()
@@ -644,7 +664,7 @@ impl Switcher {
                     .absolute()
                     .left_0()
                     .bottom_0()
-                    .h(px(2.))
+                    .h(px(3.))
                     .w(relative(far.clamp(0., 1.)))
                     .bg(p.accent)
             }))
@@ -665,13 +685,13 @@ impl Switcher {
             .justify_center()
             .w(WIDE)
             .h(UNDER)
-            .pt(px(9.))
+            .pt(px(11.))
             .child(
                 div()
                     .max_w(WIDE)
                     .truncate()
-                    .text_size(px(11.))
-                    .line_height(px(14.))
+                    .text_size(px(13.))
+                    .line_height(px(16.))
                     .map(|name| match chosen {
                         true => name
                             .font_weight(FontWeight::SEMIBOLD)
@@ -705,7 +725,7 @@ impl Switcher {
                     this.close(at, window, cx);
                 }))
         });
-        let place = place_of(at);
+        let place = place_of(at, self.across);
         v_flex()
             .absolute()
             .left(place.x)
@@ -730,7 +750,7 @@ impl Render for Switcher {
             .collect();
         // The plate under the paper that will come forward. It glides from
         // one page to the next.
-        let under = place_of(self.chosen);
+        let under = place_of(self.chosen, self.across);
         let glide = motion::glide(motion::QUICK, cx);
         let left = transition("switcher-plate-x", under.x, glide.clone(), window, cx);
         let top = transition("switcher-plate-y", under.y, glide, window, cx);
@@ -740,14 +760,14 @@ impl Render for Switcher {
             .top(top - PLATE)
             .w(WIDE + PLATE * 2.)
             .h(TALL + UNDER + PLATE + px(2.))
-            .rounded(px(12.))
+            .rounded(px(16.))
             .bg(p.surface_selected);
-        let size = bar_size(self.entries.len());
+        let size = bar_size(self.entries.len(), self.across);
         let bar = div()
             .relative()
             .w(size.width)
             .h(size.height)
-            .rounded(px(20.))
+            .rounded(px(26.))
             .bg(p.surface_raised)
             // The shadow of the drawing: a wide soft one, and a close one.
             .shadow(vec![
@@ -774,7 +794,7 @@ impl Render for Switcher {
                 div()
                     .absolute()
                     .inset_0()
-                    .rounded(px(20.))
+                    .rounded(px(26.))
                     .border_1()
                     .border_color(p.border_subtle),
             )
