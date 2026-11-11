@@ -1,0 +1,197 @@
+# Makes a release. Push a tag such as v0.2.0 and this builds ZinMD for macOS,
+# Windows and Linux, tries each download the way a person would, and attaches
+# them all to a GitHub release. A tag with a dash in it (v0.2.0-rc.1) makes a
+# pre-release.
+#
+# It can also be started by hand from the Actions page: that builds and tries
+# everything, and publishes nothing.
+#
+# Nothing is signed yet, so macOS and Windows warn the first time the app is
+# opened.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Work out the version, and check the tag agrees with Cargo.toml
+        id: version
+        run: |
+          in_cargo="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [ "${version%%-*}" != "$in_cargo" ]; then
+              echo "::error::The tag says $version but Cargo.toml says $in_cargo. Change one to match the other."
+              exit 1
+            fi
+          else
+            version="$in_cargo-dev.$GITHUB_RUN_NUMBER"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building ZinMD $version"
+
+  macos:
+    name: macOS (${{ matrix.name }})
+    needs: version
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64, name: Apple Silicon }
+          - { arch: x64, name: Intel }
+    env:
+      ZINMD_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-${{ matrix.arch }}
+      - name: Build and package
+        run: scripts/package-macos.sh ${{ matrix.arch }}
+      - name: Try the downloads
+        run: scripts/try-macos.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-macos-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: seen-macos-${{ matrix.arch }}
+          path: dist/seen/
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows
+    needs: version
+    runs-on: windows-2022
+    env:
+      ZINMD_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-x64
+      - name: Build and package
+        shell: pwsh
+        run: scripts\package-windows.ps1 x64
+      - name: Try the downloads
+        shell: pwsh
+        run: scripts\try-windows.ps1 x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-windows-x64
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: seen-windows-x64
+          path: dist/seen/
+          if-no-files-found: ignore
+
+  linux:
+    name: Linux
+    needs: version
+    # The oldest Ubuntu on offer: what is built here runs on anything newer.
+    runs-on: ubuntu-22.04
+    env:
+      ZINMD_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install what the window toolkit builds against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxcb1-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libfontconfig1-dev libfreetype6-dev libssl-dev pkg-config \
+            desktop-file-utils xvfb mesa-vulkan-drivers x11-utils
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-x64
+      # Built from their published source, at fixed versions. They are kept
+      # between runs, so this takes time only when one of them is missing.
+      - name: Install the tools that make the .deb and the .rpm
+        run: |
+          cargo deb --version 2>/dev/null | grep -q "3\.8\.0" ||
+            cargo install --locked --force cargo-deb@3.8.0
+          cargo generate-rpm --version 2>/dev/null | grep -q "0\.21\.1" ||
+            cargo install --locked --force cargo-generate-rpm@0.21.1
+      - name: Build and package
+        run: scripts/package-linux.sh x64
+      - name: Try the downloads
+        run: scripts/try-linux.sh x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-linux-x64
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+            dist/*.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: seen-linux-x64
+          path: dist/seen/
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish
+    if: github.ref_type == 'tag'
+    needs: [version, macos, windows, linux]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: package-*
+          merge-multiple: true
+      - name: List what each file should be, so a download can be checked
+        run: |
+          cd dist
+          sha256sum ZinMD-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          case "$VERSION" in
+            *-*) kind="--prerelease" ;;
+            *) kind="--latest" ;;
+          esac
+          sed "s/{version}/$VERSION/g" packaging/release-notes.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "ZinMD $VERSION" \
+            --notes-file notes.md \
+            --generate-notes \
+            --verify-tag $kind

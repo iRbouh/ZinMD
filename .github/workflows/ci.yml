@@ -1,0 +1,69 @@
+# Runs on every push: the code is formatted, clean, and its tests pass on the
+# three systems ZinMD ships for. A release never starts from broken code.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS, os: macos-15 }
+          - { name: Windows, os: windows-2022 }
+          - { name: Linux, os: ubuntu-22.04 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install what the window toolkit builds against
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxcb1-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libfontconfig1-dev libfreetype6-dev libssl-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+
+      - name: Lints
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      # A machine with no screen can still tell that the app gets as far as
+      # a drawn window: on a screen kept in memory, with no graphics card.
+      - name: Open a document and see that the app draws
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            xvfb mesa-vulkan-drivers x11-utils
+          cargo build --locked
+          scripts/see-linux.sh target/debug/zinmd
+
+      - uses: actions/upload-artifact@v7
+        if: always() && runner.os == 'Linux'
+        with:
+          name: seen-linux
+          path: dist/seen/
+          if-no-files-found: ignore
