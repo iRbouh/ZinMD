@@ -12,6 +12,7 @@
 //! W closes one, and Escape goes back to the paper it was opened from.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::text::TextView;
@@ -81,7 +82,12 @@ pub(super) struct Switcher {
     /// Whether Control is being held: letting go of it chooses.
     held: bool,
     focus: FocusHandle,
+    /// Looks, while Control is held, for it being let go of.
+    _watch: Task<()>,
 }
+
+/// How often the switcher looks whether Control is still held.
+const LOOK: Duration = Duration::from_millis(20);
 
 impl Workspace {
     /// What this paper says of itself to the switcher.
@@ -133,6 +139,17 @@ impl Workspace {
     /// one. With one paper there is nothing to switch between: Control Tab
     /// goes back to the file read before, as it always did.
     pub(super) fn switch_papers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.switch_papers_as(None, window, cx);
+    }
+
+    /// The same, with `held` saying whether Control is taken to be held:
+    /// a scripted run has no keys to hold.
+    pub(super) fn switch_papers_as(
+        &mut self,
+        held: Option<bool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // It is up already, and this paper still has the keyboard: Control
         // Tab again moves the ring on.
         if let Ok(tab) = Keystroke::parse("tab")
@@ -168,7 +185,28 @@ impl Workspace {
         if briefs.len() < 2 {
             return self.last_file(window, cx);
         }
-        let held = window.modifiers().control;
+        // Asked for with Control Tab, the switcher stays up for as long as
+        // Control is held. Where the system can say, it is asked whether it
+        // still is: this paper was told that it went down, and may not have
+        // been told yet that it came up.
+        let pressed = held.unwrap_or(window.modifiers().control);
+        let held = held.unwrap_or(crate::system::control_held().unwrap_or(pressed));
+        if pressed && !held {
+            // One quick Control Tab, already let go of: straight to the
+            // paper used before this one.
+            if let Some(before) = briefs
+                .iter()
+                .map(|(paper, _)| *paper)
+                .find(|paper| *paper != here)
+            {
+                cx.defer(move |cx| {
+                    before
+                        .update(cx, |_, window, _| window.activate_window())
+                        .ok();
+                });
+            }
+            return;
+        }
         let display = window.display(cx).map(|display| display.id());
         cx.defer(move |cx| open_switcher(briefs, here, held, display, cx));
     }
@@ -287,6 +325,28 @@ impl Switcher {
             }
         })
         .detach();
+        // Letting go of Control is not something a window is always told:
+        // the system gives the news to the window with the keyboard, which
+        // may be the paper. So while Control holds the switcher up, it asks.
+        let watch = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(LOOK).await;
+                let done = this.update_in(cx, |this: &mut Self, window, cx| {
+                    match (this.held, crate::system::control_held()) {
+                        (true, Some(false)) => {
+                            this.held = false;
+                            this.choose(window, cx);
+                            true
+                        }
+                        (true, _) => false,
+                        (false, _) => true,
+                    }
+                });
+                if !matches!(done, Ok(false)) {
+                    break;
+                }
+            }
+        });
         Self {
             entries,
             // The paper used before the one in front.
@@ -295,6 +355,7 @@ impl Switcher {
             from,
             held,
             focus: cx.focus_handle(),
+            _watch: watch,
         }
     }
 
@@ -314,6 +375,14 @@ impl Switcher {
         cx: &mut Context<Self>,
     ) {
         let paper = paper.unwrap_or(self.from);
+        crate::startup::trace(|| {
+            let name = self
+                .entries
+                .iter()
+                .find(|entry| entry.paper == paper)
+                .map(|entry| entry.brief.name.clone());
+            format!("switcher: {name:?} to the front")
+        });
         window.remove_window();
         cx.defer(move |cx| {
             paper
@@ -559,20 +628,9 @@ impl Render for Switcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *cx.palette();
         let dark = cx.theme().is_dark();
-        // Control was let go of before the switcher could see it: the paper
-        // used before this one is the one that was meant.
-        if self.held && !window.modifiers().control {
-            self.held = false;
-            let paper = self.entries.get(self.chosen).map(|entry| entry.paper);
-            let me = window.window_handle();
-            cx.defer(move |cx| {
-                me.update(cx, |_, window, _| window.remove_window()).ok();
-                if let Some(paper) = paper {
-                    paper
-                        .update(cx, |_, window, _| window.activate_window())
-                        .ok();
-                }
-            });
+        // The keys are the switcher's for as long as it is up.
+        if !self.focus.is_focused(window) {
+            self.focus.focus(window, cx);
         }
         let mut rows = Vec::new();
         for start in (0..self.entries.len()).step_by(ACROSS) {

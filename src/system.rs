@@ -52,6 +52,26 @@ pub fn command_held(held: &gpui_kit::Modifiers) -> bool {
     }
 }
 
+/// Whether the Control key is down right now, as the system says it is,
+/// not as the last event a window was sent said. A window that is not the
+/// one with the keyboard is never told that a key was let go of. `None`
+/// where the system is not asked.
+#[cfg(target_os = "macos")]
+pub fn control_held() -> Option<bool> {
+    use objc2::{class, msg_send};
+    /// The Control key, among the flags of the keys that are held.
+    const CONTROL: usize = 1 << 18;
+    // SAFETY: a message to the class that takes nothing and returns the
+    // flags of the keys held now, an unsigned word.
+    let held: usize = unsafe { msg_send![class!(NSEvent), modifierFlags] };
+    Some(held & CONTROL != 0)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn control_held() -> Option<bool> {
+    None
+}
+
 /// What showing a file where it lives is called.
 pub const REVEAL: &str = if cfg!(target_os = "macos") {
     "Show in Finder"

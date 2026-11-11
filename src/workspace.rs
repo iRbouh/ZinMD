@@ -1839,7 +1839,9 @@ impl Workspace {
             // `beside:<path>` opens a file as a paper of its own; with no
             // path, an empty one.
             // Bring up the switcher between the papers.
-            "switch" => self.switch_papers(window, cx),
+            // `switch:held` as if Control were held, which a scripted
+            // run has no way of doing: it is found let go of at once.
+            "switch" => self.switch_papers_as((argument == "held").then_some(true), window, cx),
             // Lay the papers side by side, or put them back.
             "row" => cx.defer(papers::lay_side_by_side),
             "beside" => {
