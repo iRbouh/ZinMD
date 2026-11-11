@@ -1335,11 +1335,16 @@ impl Workspace {
 
     /// The text of a document as its page shows it, when that is not the
     /// text itself: each wiki link that names a file the app knows is made
-    /// an ordinary link to it. The files it can name are those of the
-    /// panel's folders, those that are open, and those beside the document.
+    /// an ordinary link to it, and footnotes are numbered. The files a wiki
+    /// link can name are those of the panel's folders, those that are open,
+    /// and those beside the document.
     fn page_text(&mut self, path: Option<&Path>, text: &str) -> Option<crate::links::Shown> {
-        if !text.contains("[[") {
+        if !crate::links::may_link(text) {
             return None;
+        }
+        // Footnotes need no file to be known.
+        if !text.contains("[[") {
+            return crate::links::linked(text, |_| None);
         }
         let folder = path.and_then(Path::parent);
         let beside = match path {

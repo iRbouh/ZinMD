@@ -482,14 +482,17 @@ impl Workspace {
     /// Go to the heading a `#anchor` link names.
     fn jump_to_anchor(&mut self, anchor: &str, window: &mut Window, cx: &mut Context<Self>) {
         let anchor = crate::open::percent_decode(anchor).to_lowercase();
-        let line = self
-            .active_doc()
-            .and_then(|doc| {
-                doc.headings
-                    .iter()
-                    .find(|heading| doc::anchor(&heading.title) == anchor)
-            })
-            .map(|heading| heading.line);
+        let line = self.active_doc().and_then(|doc| {
+            let heading = doc
+                .headings
+                .iter()
+                .find(|heading| doc::anchor(&heading.title) == anchor);
+            match heading {
+                Some(heading) => Some(heading.line),
+                // Not a heading: a footnote, where it is written down.
+                None => crate::links::note(&doc.text, &anchor).map(|(line, ..)| line),
+            }
+        });
         if let Some(line) = line {
             self.go_to_line(line, window, cx);
         }

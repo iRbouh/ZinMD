@@ -1,5 +1,5 @@
-//! Links between notes: `[[wiki links]]`, and a glimpse of where a link
-//! leads.
+//! Links between notes: `[[wiki links]]`, footnotes, and a glimpse of where
+//! a link leads.
 //!
 //! A note names another by its file name between two pairs of brackets:
 //! `[[Roadmap]]`, `[[Roadmap|the plan]]`, `[[Roadmap#Next year]]`, or
@@ -9,6 +9,11 @@
 //! link. One that names nothing is left as it was written. Nothing else in
 //! the text changes and no line is added or taken away, so a line of the
 //! page is still the same line of the source.
+//!
+//! Footnotes are made the same way. `[^why]` in the text becomes a small
+//! raised number that leads to the note, and the note, written anywhere as
+//! `[^why]: Because.`, becomes that number and its words. The notes are
+//! numbered in the order they are written down.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -44,24 +49,39 @@ impl Shown {
     }
 }
 
-/// `text` with each wiki link that `leads` somewhere made into an ordinary
-/// link, or `None` when there is none. `leads` is given the name between the
-/// brackets, and answers with where the link goes.
-pub fn linked(text: &str, leads: impl Fn(&str) -> Option<String>) -> Option<Shown> {
-    // Most documents have none: one look says so.
-    if !text.contains("[[") {
-        return None;
-    }
-    let mut shown = String::with_capacity(text.len() + 64);
-    let mut moved = Vec::new();
-    // How much of the source has been copied, and where the line begins.
-    let (mut copied, mut start) = (0, 0);
+/// Whether `text` may have something [`linked`] would change: one look, that
+/// most documents fail.
+pub fn may_link(text: &str) -> bool {
+    text.contains("[[") || text.contains("[^")
+}
+
+/// The start of an anchor that leads to a footnote: `#fn-why`.
+const NOTE: &str = "fn-";
+
+/// The name of the footnote a line writes down, and how much of the line
+/// says so: `[^why]: ` at its start.
+fn note_written(line: &str) -> Option<(&str, usize)> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    let rest = line[indent..].strip_prefix("[^")?;
+    let (name, after) = rest.split_once("]:")?;
+    let named = !name.is_empty()
+        && name
+            .chars()
+            .all(|letter| letter.is_alphanumeric() || matches!(letter, '-' | '_'));
+    // One space after the colon belongs to the marker.
+    let space = usize::from(after.starts_with(' '));
+    (indent < 4 && named).then_some((name, indent + 2 + name.len() + 2 + space))
+}
+
+/// The lines of `text` that are not in a fence of code, with where each
+/// begins.
+fn prose(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut start = 0;
     let mut fence: Option<(u8, usize)> = None;
-    for line in text.split_inclusive('\n') {
+    text.split_inclusive('\n').filter_map(move |line| {
         let body = line.trim_end_matches(['\n', '\r']);
         let begins = start;
         start += line.len();
-        // Code is shown as it is written.
         let indent = body.len() - body.trim_start_matches(' ').len();
         let rest = &body[indent..];
         let run = |mark: u8| rest.bytes().take_while(|byte| *byte == mark).count();
@@ -69,17 +89,91 @@ pub fn linked(text: &str, leads: impl Fn(&str) -> Option<String>) -> Option<Show
             if indent < 4 && run(mark) >= length && rest[run(mark)..].trim().is_empty() {
                 fence = None;
             }
-            continue;
+            return None;
         }
         fence = (*b"`~")
             .into_iter()
             .map(|mark| (mark, run(mark)))
             .find(|(_, length)| indent < 4 && *length >= 3);
-        if fence.is_some() {
-            continue;
+        fence.is_none().then_some((begins, body))
+    })
+}
+
+/// The names of the footnotes `text` writes down, in that order: a note's
+/// number is its place here, counting from one.
+fn notes(text: &str) -> Vec<&str> {
+    let mut notes: Vec<&str> = Vec::new();
+    if text.contains("[^") {
+        for (_, line) in prose(text) {
+            if let Some((name, _)) = note_written(line).filter(|(name, _)| !notes.contains(name)) {
+                notes.push(name);
+            }
         }
+    }
+    notes
+}
+
+/// A number, small and raised.
+fn raised(number: usize) -> String {
+    const DIGITS: [char; 10] = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+    number
+        .to_string()
+        .bytes()
+        .map(|digit| DIGITS[usize::from(digit - b'0')])
+        .collect()
+}
+
+/// The line a footnote is written down on, and its words: for the anchor
+/// `#fn-why`, the note named `why`.
+pub fn note(text: &str, anchor: &str) -> Option<(u32, usize, String)> {
+    let name = anchor.strip_prefix(NOTE)?;
+    let number = notes(text).iter().position(|note| *note == name)? + 1;
+    let mut lines = text.lines().enumerate();
+    let (line, first) = lines.find_map(|(line, content)| {
+        let (written, marker) = note_written(content)?;
+        (written == name).then(|| (line, &content[marker..]))
+    })?;
+    // It goes on over the lines that follow, until one is blank or another
+    // note begins.
+    let mut words = first.trim().to_string();
+    for (_, more) in lines {
+        if more.trim().is_empty() || note_written(more).is_some() {
+            break;
+        }
+        words.push(' ');
+        words.push_str(more.trim());
+    }
+    Some((line as u32, number, words))
+}
+
+/// `text` as its page shows it: with each wiki link that `leads` somewhere
+/// made into an ordinary link, and its footnotes numbered. `None` when there
+/// is nothing to change. `leads` is given the name between the brackets of a
+/// wiki link, and answers with where the link goes.
+pub fn linked(text: &str, leads: impl Fn(&str) -> Option<String>) -> Option<Shown> {
+    if !may_link(text) {
+        return None;
+    }
+    let notes = notes(text);
+    let numbered = |name: &str| notes.iter().position(|note| *note == name).map(|at| at + 1);
+    let mut shown = String::with_capacity(text.len() + 64);
+    let mut moved = Vec::new();
+    // How much of the source has been copied.
+    let mut copied = 0;
+    for (begins, body) in prose(text) {
         let bytes = body.as_bytes();
         let mut at = 0;
+        // A footnote written down: its number, as the first of a list.
+        if let Some((name, marker)) = note_written(body)
+            && let Some(number) = numbered(name)
+        {
+            let indent = body.len() - body.trim_start_matches(' ').len();
+            shown.push_str(&text[copied..begins + indent]);
+            shown.push_str(&format!("{number}. "));
+            at = marker;
+            copied = begins + at;
+            moved.push((shown.len(), copied as isize - shown.len() as isize));
+        }
         while at < bytes.len() {
             match bytes[at] {
                 // What a backslash is before is meant as written.
@@ -115,6 +209,22 @@ pub fn linked(text: &str, leads: impl Fn(&str) -> Option<String>) -> Option<Show
                             shown.push_str(&text[copied..begins + at]);
                             shown.push_str(&link);
                             at += inner.len() + 4;
+                            copied = begins + at;
+                            moved.push((shown.len(), copied as isize - shown.len() as isize));
+                        }
+                        None => at += 2,
+                    }
+                }
+                // A footnote named in the text: its number, small and raised.
+                b'[' if bytes.get(at + 1) == Some(&b'^') => {
+                    let name = body[at + 2..]
+                        .find(']')
+                        .map(|length| &body[at + 2..at + 2 + length]);
+                    match name.and_then(|name| Some((name, numbered(name)?))) {
+                        Some((name, number)) => {
+                            shown.push_str(&text[copied..begins + at]);
+                            shown.push_str(&format!("[{}](<#{NOTE}{name}>)", raised(number)));
+                            at += name.len() + 3;
                             copied = begins + at;
                             moved.push((shown.len(), copied as isize - shown.len() as isize));
                         }
@@ -280,6 +390,15 @@ pub fn glimpse(url: &str, folder: Option<&Path>, own: &str) -> Option<Glimpse> {
             (files::display_name(&path), std::borrow::Cow::Owned(text))
         }
     };
+    // A footnote says itself.
+    if let Some((_, number, words)) = note(&text, &anchor) {
+        let about = doc::excerpt(&words, 0, None, GLIMPSE_SAYS);
+        return Some(Glimpse {
+            file,
+            title: format!("Note {number}"),
+            about,
+        });
+    }
     let headings = doc::outline(&text);
     let (title, from, to) = match anchor.is_empty() {
         // The whole file: its title is its first heading, or its name.
@@ -342,6 +461,36 @@ mod tests {
         );
         // Brackets that are never closed, and empty ones.
         assert_eq!(shown("[[Roadmap and [[]] and [[|x]]"), None);
+    }
+
+    #[test]
+    fn footnotes_are_numbered_as_they_are_written_down() {
+        let source = "Why?[^why] And how.[^how] Again.[^why] Never.[^gone]\n\n\
+                      [^how]: With care.\n[^why]: Because **it matters**,\n    and it lasts.\n\n\
+                      `[^why]` stays, and so does:\n\n```\n[^why]: code\n```\n";
+        let shown = linked(source, |_| None).unwrap();
+        assert_eq!(
+            shown.text,
+            "Why?[²](<#fn-why>) And how.[¹](<#fn-how>) Again.[²](<#fn-why>) Never.[^gone]\n\n\
+             1. With care.\n2. Because **it matters**,\n    and it lasts.\n\n\
+             `[^why]` stays, and so does:\n\n```\n[^why]: code\n```\n"
+        );
+        assert_eq!(shown.text.lines().count(), source.lines().count());
+        // Where a note is written down, its number and its words.
+        assert_eq!(
+            note(source, "fn-why"),
+            Some((3, 2, "Because **it matters**, and it lasts.".into()))
+        );
+        assert_eq!(note(source, "fn-how"), Some((2, 1, "With care.".into())));
+        assert_eq!(note(source, "fn-gone"), None);
+        assert_eq!(note(source, "next-year"), None);
+        assert_eq!(raised(120), "¹²⁰");
+        // A glimpse of a note is its words, without their Markdown.
+        let seen = glimpse("#fn-why", None, source).unwrap();
+        assert_eq!(
+            (seen.title.as_str(), seen.about.as_str()),
+            ("Note 2", "Because it matters, and it lasts.")
+        );
     }
 
     #[test]

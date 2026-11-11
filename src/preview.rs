@@ -314,7 +314,14 @@ pub fn style(p: &Palette, body: Pixels, dark: bool) -> TextViewStyle {
                 .pb(body * 0.9),
         ))
         // Table rows sit on the page itself; only the header row is tinted.
-        .with_table(radius(StyleRefinement::default().bg(p.surface_preview)))
+        // A table too wide for the page is not squeezed until its words
+        // break in two: its columns give way down to a width they can be
+        // read at, and past that the table scrolls sideways.
+        .with_table(radius({
+            let mut table = StyleRefinement::default().bg(p.surface_preview);
+            table.overflow.x = Some(Overflow::Scroll);
+            table
+        }))
         .with_table_head(
             StyleRefinement::default()
                 .bg(p.surface_sunken)
