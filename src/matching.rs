@@ -200,6 +200,19 @@ impl Wanted {
     pub fn is_empty(&self) -> bool {
         self.whole.is_empty()
     }
+
+    /// Whether more than one word was typed.
+    pub fn several(&self) -> bool {
+        self.words.len() > 1
+    }
+
+    /// What [`words_in`] gives for a line that holds every word.
+    pub fn every_word(&self) -> u64 {
+        match self.words.len() {
+            64.. => u64::MAX,
+            count => (1 << count) - 1,
+        }
+    }
 }
 
 /// How what was found answers what was typed.
@@ -218,6 +231,28 @@ pub enum Answer {
 pub struct Room {
     rows: Rows,
     found: Vec<Run>,
+}
+
+impl Room {
+    /// Put what was found in the order it comes in the text, and drop what
+    /// overlaps.
+    fn settle(&mut self) {
+        self.found.sort_unstable();
+        let mut end = 0;
+        self.found.retain(|(from, to)| {
+            let clear = *from >= end;
+            if clear {
+                end = *to;
+            }
+            clear
+        });
+    }
+
+    /// Where the line last looked at answered, in the bytes of that line.
+    pub fn places(&mut self, line: &Folded) -> Vec<Range<usize>> {
+        self.settle();
+        self.found.iter().map(|run| line.place(*run)).collect()
+    }
 }
 
 /// Every place in `text` that answers `wanted`, in order, and how well. The
@@ -239,48 +274,51 @@ pub fn search(text: &Folded, wanted: &Wanted) -> (Vec<Range<usize>>, Answer) {
             text.every_word(wanted, line, near, &mut room.rows, &mut room.found);
         }
         if !room.found.is_empty() {
-            // In the order they come in the text, without any that overlap.
-            room.found.sort_unstable();
-            let mut end = 0;
-            room.found.retain(|(from, to)| {
-                let clear = *from >= end;
-                if clear {
-                    end = *to;
-                }
-                clear
-            });
-            let places = room.found.iter().map(|run| text.place(*run)).collect();
-            return (places, answer);
+            return (room.places(text), answer);
         }
     }
     (Vec::new(), Answer::Close)
 }
 
-/// Whether a line of text answers `wanted`: where its first match is, and how
-/// well it answers. With `near`, words that are nearly right count, for a
-/// line with nothing better.
-pub fn line_answers(
-    line: &Folded,
-    wanted: &Wanted,
-    near: bool,
-    room: &mut Room,
-) -> Option<(usize, Answer)> {
+/// How a line of text answers `wanted`, if it does. With `near`, words that
+/// are nearly right count, for a line with nothing better. Where it answers
+/// is left in `room`: see [`Room::places`].
+pub fn line_answers(line: &Folded, wanted: &Wanted, near: bool, room: &mut Room) -> Option<Answer> {
     let all = (0, line.letters.len());
-    if let Some(at) = line.next(&wanted.whole, 0, all.1) {
-        return Some((line.spans[at].0, Answer::Exact));
-    }
     room.found.clear();
-    let answer = if wanted.words.len() > 1
+    let mut from = 0;
+    while let Some(at) = line.next(&wanted.whole, from, all.1) {
+        from = at + wanted.whole.len();
+        room.found.push((at, from));
+    }
+    if !room.found.is_empty() {
+        Some(Answer::Exact)
+    } else if wanted.words.len() > 1
         && line.every_word(wanted, all, false, &mut room.rows, &mut room.found)
     {
-        Answer::Words
+        Some(Answer::Words)
     } else if near && line.every_word(wanted, all, true, &mut room.rows, &mut room.found) {
-        Answer::Close
+        Some(Answer::Close)
     } else {
-        return None;
-    };
-    let first = room.found.iter().map(|run| run.0).min()?;
-    Some((line.spans[first].0, answer))
+        None
+    }
+}
+
+/// Which of the words are in a line, one bit a word: for words that are not
+/// all in one line, but may all be under one heading. Where they are is left
+/// in `room`.
+pub fn words_in(line: &Folded, wanted: &Wanted, room: &mut Room) -> u64 {
+    let all = (0, line.letters.len());
+    room.found.clear();
+    let mut held = 0;
+    for (nth, word) in wanted.words.iter().enumerate().take(64) {
+        let before = room.found.len();
+        line.as_word(word, all, &mut room.found);
+        if room.found.len() > before {
+            held |= 1 << nth;
+        }
+    }
+    held
 }
 
 /// How well a short name, such as a file's, answers what was typed. Lower is
@@ -470,16 +508,43 @@ mod tests {
 
     #[test]
     fn a_line_answers_whole_then_by_words_then_nearly() {
-        let line = Folded::new("  Frame time must stay under budget");
+        let text = "  Frame time must stay under budget";
+        let line = Folded::new(text);
         let mut room = Room::default();
-        let mut answers =
-            |typed: &str, near| line_answers(&line, &Wanted::new(typed), near, &mut room);
-        assert_eq!(answers("frame time", false), Some((2, Answer::Exact)));
-        assert_eq!(answers("budget frame", false), Some((2, Answer::Words)));
+        let mut answers = |typed: &str, near| {
+            let answer = line_answers(&line, &Wanted::new(typed), near, &mut room)?;
+            let pieces: Vec<&str> = room.places(&line).into_iter().map(|at| &text[at]).collect();
+            Some((answer, pieces))
+        };
+        assert_eq!(
+            answers("frame time", false),
+            Some((Answer::Exact, vec!["Frame time"]))
+        );
+        assert_eq!(
+            answers("budget frame", false),
+            Some((Answer::Words, vec!["Frame", "budget"]))
+        );
         assert_eq!(answers("budget missing", false), None);
         assert_eq!(answers("bugdet", false), None);
-        assert_eq!(answers("bugdet", true), Some((29, Answer::Close)));
+        assert_eq!(
+            answers("bugdet", true),
+            Some((Answer::Close, vec!["budget"]))
+        );
         // Nearly is only for a line with nothing better.
-        assert_eq!(answers("budget frame", true), Some((2, Answer::Words)));
+        assert_eq!(
+            answers("budget frame", true).map(|found| found.0),
+            Some(Answer::Words)
+        );
+    }
+
+    #[test]
+    fn the_words_a_line_holds_are_told_apart() {
+        let line = Folded::new("the frame is late");
+        let wanted = Wanted::new("late budget frame");
+        let mut room = Room::default();
+        assert_eq!(words_in(&line, &wanted, &mut room), 0b101);
+        assert_eq!(room.places(&line), vec![4..9, 13..17]);
+        assert_eq!(wanted.every_word(), 0b111);
+        assert!(wanted.several() && !Wanted::new("late").several());
     }
 }

@@ -5,8 +5,14 @@
 //! `ZINMD_SIZE=1420x888` sets the window size, `ZINMD_THEME=dark|light` the appearance.
 //! `ZINMD_SCRIPT="type:Hello;save;editor:600"` drives the app first; the steps
 //! are listed at `Workspace::debug_step`.
+//!
+//! `ZINMD_DRAW=1` draws the window itself while it waits. The system stops
+//! asking a window for frames when it is covered or on another desktop, and
+//! then nothing that moves gets anywhere: what fades in is never seen. With
+//! it, a run gives the same picture whatever else is on the screen. Leave it
+//! off to time frames: these extra ones would be counted.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::ThemeMode;
 use gpui_kit::*;
@@ -109,15 +115,31 @@ fn pointer_step(step: &str) -> Option<Vec<PlatformInput>> {
     Some(events)
 }
 
+/// Wait for `time`. With `ZINMD_DRAW`, draw the window all the while.
+async fn wait(window: AnyWindowHandle, time: Duration, cx: &mut AsyncApp) {
+    if std::env::var_os("ZINMD_DRAW").is_none() {
+        return cx.background_executor().timer(time).await;
+    }
+    let until = Instant::now() + time;
+    while Instant::now() < until {
+        cx.update_window(window, |_, window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        })
+        .ok();
+        cx.background_executor()
+            .timer(Duration::from_millis(16))
+            .await;
+    }
+}
+
 pub fn after_first_frame(window: AnyWindowHandle, workspace: Entity<Workspace>, cx: &mut App) {
     let Ok(path) = std::env::var("ZINMD_SHOT") else {
         return;
     };
     cx.spawn(async move |cx| {
         // Let background work (file tree, line map) land first.
-        cx.background_executor()
-            .timer(Duration::from_millis(400))
-            .await;
+        wait(window, Duration::from_millis(400), cx).await;
         // Run the script one step at a time, giving each time to settle.
         // `ZINMD_PAUSE` sets how long; `ZINMD_SETTLE` how long to wait before
         // the picture, so a short one catches an animation midway.
@@ -146,13 +168,9 @@ pub fn after_first_frame(window: AnyWindowHandle, workspace: Entity<Workspace>, 
                 }
             })
             .ok();
-            cx.background_executor()
-                .timer(millis("ZINMD_PAUSE", 150))
-                .await;
+            wait(window, millis("ZINMD_PAUSE", 150), cx).await;
         }
-        cx.background_executor()
-            .timer(millis("ZINMD_SETTLE", 600))
-            .await;
+        wait(window, millis("ZINMD_SETTLE", 600), cx).await;
         cx.update_window(window, |_, _, cx| {
             workspace.update(cx, |workspace, _| workspace.report_frames())
         })

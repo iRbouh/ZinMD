@@ -41,6 +41,21 @@ const GLIDE: Duration = Duration::from_millis(340);
 const CUT: Duration = Duration::from_millis(300);
 /// The share of a cut spent fading out.
 const CUT_OUT: f32 = 0.35;
+/// How long a move to a line waits for a page that is not ready: the file
+/// was only just opened.
+const PATIENCE: Duration = Duration::from_secs(2);
+/// How many lines down a block a line can be and still be on the page when
+/// the top of the block is at the top of the page.
+const DEEP: f32 = 10.;
+
+/// A line of a document to go to on the page, with words to mark there when
+/// it was found by the search.
+struct Arriving {
+    doc: usize,
+    line: u32,
+    words: Option<SharedString>,
+    since: Instant,
+}
 
 /// What the card beside the rail says about a section.
 struct Card {
@@ -87,6 +102,7 @@ pub(super) struct Reader {
     mark: Option<usize>,
     card: Option<Card>,
     motion: Option<PageMove>,
+    arriving: Option<Arriving>,
     /// How far each file has been read, 0 to 1, most recently read first.
     pub progress: Vec<(PathBuf, f32)>,
 }
@@ -104,6 +120,7 @@ impl Reader {
             mark: None,
             card: None,
             motion: None,
+            arriving: None,
             progress,
         }
     }
@@ -263,6 +280,94 @@ impl Workspace {
     }
 
     // ------------------------------------------------------------ movement
+
+    /// Go to a line of the document on show: with the caret in the editor,
+    /// by moving the page while reading.
+    pub(super) fn go_to_line(&mut self, line: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.arrive_at(line, None, window, cx);
+    }
+
+    /// Go to a line of the document on show and mark `words` on the page
+    /// there: how what the search of all files found is shown. The page of a
+    /// file that was only just opened is not ready to be moved, so the move
+    /// waits for it.
+    pub(super) fn arrive_at(
+        &mut self,
+        line: u32,
+        words: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.active_doc().map(|doc| doc.id) else {
+            return;
+        };
+        match self.mode {
+            Mode::Edit => self.jump_to_line(line, window, cx),
+            Mode::Read => {
+                self.reader.arriving = Some(Arriving {
+                    doc,
+                    line,
+                    words: words.filter(|words| !words.is_empty()),
+                    since: Instant::now(),
+                });
+                // The move is made as the next frame is drawn.
+                cx.notify();
+            }
+        }
+    }
+
+    /// Make the move that is waiting, if the page is ready for it. Called as
+    /// each frame is drawn, and only then: it asks for the next one.
+    pub(super) fn arrive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(arriving) = &self.reader.arriving else {
+            return;
+        };
+        let doc = self.active_doc().filter(|doc| doc.id == arriving.doc);
+        // The block of the page the line is in, once the lines are mapped,
+        // and whether the line is far down it. Words can only be marked on a
+        // page whose text is there.
+        let place = doc.and_then(|doc| {
+            let (block, _) = doc.blocks.locate(arriving.line as f32)?;
+            let start = doc.blocks.line_at(block, 0.)?;
+            let deep = arriving.line as f32 - start > DEEP;
+            // A heading just above the block belongs with it: the page
+            // starts there, and says what the block is about.
+            let above = block.checked_sub(1).filter(|above| {
+                let line = doc.blocks.line_at(*above, 0.);
+                doc.headings
+                    .iter()
+                    .any(|heading| Some(heading.line as f32) == line)
+            });
+            let written = !doc.preview.read(cx).rendered_text().is_empty();
+            (arriving.words.is_none() || written).then_some((above.unwrap_or(block), deep))
+        });
+        let Some((block, deep)) = place else {
+            match doc.is_some() && arriving.since.elapsed() < PATIENCE {
+                true => window.request_animation_frame(),
+                false => self.reader.arriving = None,
+            }
+            return;
+        };
+        let Some(arriving) = self.reader.arriving.take() else {
+            return;
+        };
+        // The page goes to the top of the block the line is in, which shows
+        // what follows it too. A line far down a long block (a long list, a
+        // long listing) would be off the foot of the page: there the words,
+        // once marked, are brought into view themselves.
+        let marked = arriving
+            .words
+            .is_some_and(|words| self.find_from_search(&words, arriving.line, deep, window, cx));
+        if !(marked && deep) {
+            self.move_page_to(
+                ListOffset {
+                    item_ix: block,
+                    offset_in_item: px(0.),
+                },
+                cx,
+            );
+        }
+    }
 
     /// Take the page to `target`. Somewhere near, it glides; somewhere far,
     /// gliding would mean a blur of everything in between, so it fades out

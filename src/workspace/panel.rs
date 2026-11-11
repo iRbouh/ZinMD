@@ -2462,7 +2462,7 @@ impl Workspace {
                         .child(heading.title.clone()),
                 )
                 .on_click(
-                    cx.listener(move |this, _, window, cx| this.jump_to_line(line, window, cx)),
+                    cx.listener(move |this, _, window, cx| this.go_to_line(line, window, cx)),
                 );
             rows.push(self.hoverable(item, Hot::Heading(ix), p.surface_hover, window, cx));
         }

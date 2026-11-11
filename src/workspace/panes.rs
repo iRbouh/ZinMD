@@ -473,7 +473,7 @@ impl Workspace {
             })
             .map(|heading| heading.line);
         if let Some(line) = line {
-            self.jump_to_line(line, window, cx);
+            self.go_to_line(line, window, cx);
         }
     }
 }

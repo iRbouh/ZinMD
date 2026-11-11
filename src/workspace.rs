@@ -304,6 +304,8 @@ pub struct Workspace {
     switches: usize,
     palette: Option<palette::CommandPalette>,
     _search: Task<()>,
+    /// Set to give up the search of the files that is under way.
+    search_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The palette just closed, fading out, and when it closed.
     palette_leaving: Option<(palette::CommandPalette, Instant)>,
     /// How wide the side panel is when open; dragging its edge changes this.
@@ -408,6 +410,7 @@ impl Workspace {
             switches: 0,
             palette: None,
             _search: Task::ready(()),
+            search_stop: Default::default(),
             palette_leaving: None,
             sidebar_width: px(session.sidebar_width),
             split: session.split,
@@ -1287,6 +1290,21 @@ impl Workspace {
             .collect()
     }
 
+    /// Every file a search of the text looks in: the one on show first, so
+    /// that it comes first among equals, then the others that are open, then
+    /// those of the folders.
+    fn files_to_search(&self) -> Vec<PathBuf> {
+        let shown = self.active_doc().and_then(|doc| doc.path.clone());
+        let open = self.docs.iter().filter_map(|doc| doc.path.clone());
+        let mut seen = std::collections::HashSet::new();
+        shown
+            .into_iter()
+            .chain(open)
+            .chain(self.all_files())
+            .filter(|path| seen.insert(path.clone()))
+            .collect()
+    }
+
     // ------------------------------------------------------------- commands
 
     fn set_view(&mut self, view: ViewMode, cx: &mut Context<Self>) {
@@ -1484,7 +1502,7 @@ impl Workspace {
                 })
                 .detach();
             }
-            "line" => self.jump_to_line(argument.parse().unwrap_or(0), window, cx),
+            "line" => self.go_to_line(argument.parse().unwrap_or(0), window, cx),
             "mode" => self.set_mode(
                 match argument {
                     "edit" => Mode::Edit,
@@ -1703,6 +1721,7 @@ impl Render for Workspace {
         #[cfg(feature = "shot")]
         self.frames.push(Instant::now());
         self.sync_scroll(window, cx);
+        self.arrive(window, cx);
         let p = *cx.palette();
 
         let body = match self.mode {

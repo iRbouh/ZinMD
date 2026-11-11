@@ -34,7 +34,9 @@ A file opens as a page to read, in a window the shape of a sheet of paper.
   added, with their Markdown files. Pin a folder, drag it elsewhere, type to
   find a file in any of them, peek inside a file without opening it
 - Copy a file's content or its path from its row; new, rename, move to Trash
-- Command palette (`⌘P`) and search across every folder (`⇧⌘F`)
+- Command palette (`⌘P`) and search across every folder (`⇧⌘F`): what is
+  found is shown a section at a time, the best first, and opens at its
+  place with the words marked on the page
 - Search that forgives: accents and case do not count, words are found in
   any order, and a slip of the finger still finds the word you meant
 - Export to one self-contained HTML file
