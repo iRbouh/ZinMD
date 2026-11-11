@@ -12,7 +12,8 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{Doc, ViewMode, Workspace};
+use super::reader::{PAGE_BOTTOM, PAGE_TOP};
+use super::{Doc, Mode, ViewMode, Workspace};
 use crate::theme::{ActivePalette as _, Palette, size};
 use crate::{doc, files, motion, preview};
 
@@ -93,13 +94,17 @@ impl Workspace {
     /// Keep the two panes on the same part of the document.
     pub(super) fn sync_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.advance_glide(window, cx);
-        if !self.sync_enabled || self.view != ViewMode::Split {
+        // After a change of mode the two are lined up once, whatever is on show.
+        let carrying = self.carry > 0;
+        self.carry = self.carry.saturating_sub(1);
+        let split = self.mode == Mode::Edit && self.view == ViewMode::Split;
+        if !(carrying || (self.sync_enabled && split)) {
             return;
         }
         let Some(doc) = self.docs.get_mut(self.active) else {
             return;
         };
-        if doc.sync.update(&doc.editor, &doc.preview, &doc.blocks, cx) {
+        if doc.sync.update(&doc.editor, &doc.preview, &doc.blocks, cx) || carrying {
             window.request_animation_frame();
         }
     }
@@ -179,7 +184,7 @@ impl Workspace {
                     div()
                         .h_full()
                         .w(preview_text.max(PANE_MIN))
-                        .child(self.render_preview(doc, preview_text.max(PANE_MIN), &p, cx)),
+                        .child(self.render_preview(doc, preview_text.max(PANE_MIN), None, &p, cx)),
                 )
         });
         // The divider can be dragged while both panes are fully open.
@@ -208,18 +213,32 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_preview(
+    /// The rendered document, `width` wide. As a page it is the whole window:
+    /// its text fills a `sheet` of paper in the middle, with margins at the
+    /// sides, and starts below the menu that floats over its top.
+    pub(super) fn render_preview(
         &self,
         doc: &Doc,
         width: Pixels,
+        sheet: Option<Pixels>,
         p: &Palette,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let list = doc.preview.read(cx).list_state().clone();
-        let margin = ((width - PREVIEW_COLUMN) / 2.).max(px(40.));
+        let (margin, clear, foot) = match sheet {
+            Some(sheet) => (((width - sheet) / 2.).max(px(24.)), PAGE_TOP, PAGE_BOTTOM),
+            // Beside the editor the status bar is under the text, not the window's edge.
+            None => (
+                ((width - PREVIEW_COLUMN) / 2.).max(px(40.)),
+                PREVIEW_TOP,
+                px(0.),
+            ),
+        };
         let top = list.logical_scroll_top();
         let scrolled = top.item_ix > 0 || top.offset_in_item > px(0.);
-        let clear = p.surface_preview.opacity(0.);
+        // More text waits below, unless the list knows it is at its end.
+        let more_below = foot > px(0.) && list.is_scrolled_to_end() != Some(true);
+        let see_through = p.surface_preview.opacity(0.);
         let (id, folder) = (
             doc.id,
             doc.path
@@ -255,7 +274,8 @@ impl Workspace {
             .text_size(size::FONT_BODY)
             .line_height(relative(1.65))
             .px(margin)
-            .pt(PREVIEW_TOP);
+            .pt(clear)
+            .pb(foot);
 
         div()
             .id(("preview", doc.id))
@@ -278,14 +298,30 @@ impl Workspace {
                 pane.child(
                     div()
                         .absolute()
-                        .top(PREVIEW_TOP)
+                        .top(clear)
                         .left_0()
                         .right(px(12.))
                         .h(px(20.))
                         .bg(linear_gradient(
                             180.,
                             linear_color_stop(p.surface_preview, 0.),
-                            linear_color_stop(clear, 1.),
+                            linear_color_stop(see_through, 1.),
+                        )),
+                )
+            })
+            // And so does text scrolling out at the foot of a page.
+            .when(more_below, |pane| {
+                pane.child(
+                    div()
+                        .absolute()
+                        .bottom(foot)
+                        .left_0()
+                        .right(px(12.))
+                        .h(px(20.))
+                        .bg(linear_gradient(
+                            180.,
+                            linear_color_stop(see_through, 0.),
+                            linear_color_stop(p.surface_preview, 1.),
                         )),
                 )
             })

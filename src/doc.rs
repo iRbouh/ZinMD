@@ -115,6 +115,148 @@ pub fn anchor(title: &str) -> String {
         .collect()
 }
 
+/// A few plain words from the source lines `from..to`, for a card that says
+/// what a section, or a file, is about: the first sentences of its prose, with
+/// the Markdown taken out. Headings, code, tables and front matter are passed over.
+pub fn excerpt(text: &str, from: u32, to: Option<u32>, limit: usize) -> String {
+    let mut words = String::new();
+    let mut fence: Option<(u8, usize)> = None;
+    let mut in_front_matter = false;
+    let to = to.unwrap_or(u32::MAX);
+    for (line_ix, raw) in text.lines().enumerate() {
+        let line_ix = line_ix as u32;
+        if line_ix >= to || words.len() >= limit {
+            break;
+        }
+        let line = raw.trim();
+        if line_ix == 0 && line == "---" {
+            in_front_matter = true;
+            continue;
+        }
+        if in_front_matter {
+            in_front_matter = !(line == "---" || line == "...");
+            continue;
+        }
+        if let Some((ch, len)) = fence {
+            let run = line.bytes().take_while(|b| *b == ch).count();
+            if run >= len && line[run..].trim().is_empty() {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(ch) = line.bytes().next().filter(|b| *b == b'`' || *b == b'~') {
+            let run = line.bytes().take_while(|b| *b == ch).count();
+            if run >= 3 {
+                fence = Some((ch, run));
+                continue;
+            }
+        }
+        if line_ix < from {
+            continue;
+        }
+        // One paragraph says enough, once it says something.
+        if line.is_empty() && words.len() >= 60 {
+            break;
+        }
+        // Not prose: headings, tables, rules, images, the label of a callout, HTML.
+        let skip = line.is_empty()
+            || line.starts_with('#')
+            || line.starts_with('|')
+            || line.starts_with("![")
+            || line.starts_with('<')
+            || line.starts_with("$$")
+            || line.trim_start_matches(['>', ' ']).starts_with("[!")
+            || line
+                .chars()
+                .all(|c| matches!(c, '-' | '=' | '*' | '_' | ' '));
+        if skip {
+            continue;
+        }
+        // A formula does not read as words: the excerpt stops where one starts.
+        let (line, formula) = match line.find('$') {
+            Some(at) => (line[..at].trim_end(), true),
+            None => (line, false),
+        };
+        let plain = plain_text(line);
+        if !plain.is_empty() {
+            if !words.is_empty() {
+                words.push(' ');
+            }
+            words.push_str(&plain);
+        }
+        if formula {
+            if !words.is_empty() {
+                words.push('…');
+            }
+            return words;
+        }
+    }
+    if words.len() > limit {
+        // Cut at a word, not through one.
+        let mut end = limit;
+        while !words.is_char_boundary(end) {
+            end -= 1;
+        }
+        let cut = words[..end].rfind(' ').unwrap_or(end);
+        words.truncate(cut);
+        words.push('…');
+    }
+    words
+}
+
+/// One line of Markdown as it reads once rendered: without the marks for
+/// lists, quotes, emphasis and code, and with links reduced to their text.
+fn plain_text(line: &str) -> String {
+    let mut rest = line.trim_start_matches(['>', ' ']);
+    for marker in ["- [ ] ", "- [x] ", "- [X] ", "- ", "* ", "+ "] {
+        if let Some(after) = rest.strip_prefix(marker) {
+            rest = after;
+            break;
+        }
+    }
+    // `1. ` and `12) `.
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 0 && rest[digits..].starts_with(['.', ')']) {
+        rest = rest[digits + 1..].trim_start();
+    }
+
+    let mut plain = String::with_capacity(rest.len());
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' | '_' | '`' | '~' => {}
+            // `[text](target)` reads as `text`.
+            '[' => {}
+            ']' => {
+                if chars.peek() == Some(&'(') {
+                    for skipped in chars.by_ref() {
+                        if skipped == ')' {
+                            break;
+                        }
+                    }
+                }
+            }
+            '\\' => {
+                if let Some(escaped) = chars.next() {
+                    plain.push(escaped);
+                }
+            }
+            c => plain.push(c),
+        }
+    }
+    plain.trim().to_string()
+}
+
+/// How many words there are in the source lines `from..to`.
+pub fn words_between(text: &str, from: u32, to: Option<u32>) -> usize {
+    text.lines()
+        .skip(from as usize)
+        .take(to.map_or(usize::MAX, |to| to.saturating_sub(from) as usize))
+        .flat_map(str::split_whitespace)
+        .filter(|word| word.chars().any(char::is_alphanumeric))
+        .count()
+}
+
 /// Size of a document, for the status bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stats {
@@ -140,6 +282,32 @@ impl Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn excerpts_are_prose_without_the_markdown() {
+        let text = "---\ntitle: x\n---\n# Title\n\nA **native** editor built on [GPUI](https://gpui.rs).\n\n```rust\nfn main() {}\n```\n\n> [!TIP]\n> Press `Cmd K` to jump.\n\n## Next\n\n- [x] One thing\n| a | b |\n";
+        assert_eq!(
+            excerpt(text, 0, None, 200),
+            "A native editor built on GPUI. Press Cmd K to jump. One thing"
+        );
+        // Only the lines of one section, and no longer than asked.
+        assert_eq!(excerpt(text, 14, None, 200), "One thing");
+        assert_eq!(excerpt(text, 0, Some(6), 12), "A native…");
+        // A formula ends it; and so does the end of a paragraph that said enough.
+        assert_eq!(
+            excerpt(
+                "Frame time stays under $t_f = 8$ ms.\n\nMore.",
+                0,
+                None,
+                200
+            ),
+            "Frame time stays under…"
+        );
+        let long =
+            "This first paragraph is comfortably longer than sixty characters in all.\n\nSecond.";
+        assert!(!excerpt(long, 0, None, 200).contains("Second"));
+        assert_eq!(words_between(text, 14, None), 6);
+    }
 
     fn titles(text: &str) -> Vec<(u8, String, u32)> {
         outline(text)

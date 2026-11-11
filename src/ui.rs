@@ -32,26 +32,3 @@ pub fn section_label(label: &'static str, p: &Palette) -> Div {
         .text_color(p.text_tertiary)
         .child(label)
 }
-
-/// How wide `text` is when drawn at `size` in the interface font.
-pub fn text_width(
-    text: &SharedString,
-    size: Pixels,
-    weight: FontWeight,
-    window: &Window,
-) -> Pixels {
-    let mut font = window.text_style().font();
-    font.weight = weight;
-    let run = TextRun {
-        len: text.len(),
-        font,
-        color: Hsla::default(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    window
-        .text_system()
-        .shape_line(text.clone(), size, &[run], None)
-        .width
-}

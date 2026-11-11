@@ -128,7 +128,7 @@ fn scroll_editor_to(editor: &Entity<EditorState>, line: f32, cx: &mut App) -> bo
 }
 
 /// The source line at the top of the preview. `None` until that row is measured.
-fn preview_top_line(list: &ListState, blocks: &BlockMap) -> Option<f32> {
+pub fn preview_top_line(list: &ListState, blocks: &BlockMap) -> Option<f32> {
     let top = list.logical_scroll_top();
     let height = list.bounds_for_item(top.item_ix)?.size.height;
     let through = if height > px(0.) {

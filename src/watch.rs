@@ -13,9 +13,9 @@ use notify::{RecursiveMode, Watcher as _};
 
 pub struct Watcher {
     system: notify::RecommendedWatcher,
-    /// The folder shown in the sidebar, watched with everything under it.
-    root: Option<PathBuf>,
-    /// Folders of open documents that are outside the root.
+    /// The folders of the side panel, each watched with everything under it.
+    roots: HashSet<PathBuf>,
+    /// Folders of open documents that are outside all of those.
     folders: HashSet<PathBuf>,
 }
 
@@ -35,7 +35,7 @@ pub fn start() -> Option<(Watcher, UnboundedReceiver<Vec<PathBuf>>)> {
     Some((
         Watcher {
             system,
-            root: None,
+            roots: HashSet::new(),
             folders: HashSet::new(),
         },
         receiver,
@@ -43,17 +43,24 @@ pub fn start() -> Option<(Watcher, UnboundedReceiver<Vec<PathBuf>>)> {
 }
 
 impl Watcher {
-    /// Watch `root` and everything under it, instead of the previous root.
-    pub fn set_root(&mut self, root: Option<&Path>) {
-        if self.root.as_deref() == root {
-            return;
-        }
-        if let Some(old) = self.root.take() {
+    /// Watch these folders and everything under them, and no longer the ones
+    /// that are not among them.
+    pub fn set_roots(&mut self, roots: &[PathBuf]) {
+        let gone: Vec<PathBuf> = self
+            .roots
+            .iter()
+            .filter(|old| !roots.contains(old))
+            .cloned()
+            .collect();
+        for old in gone {
             self.system.unwatch(&old).ok();
+            self.roots.remove(&old);
         }
-        if let Some(root) = root {
-            if self.system.watch(root, RecursiveMode::Recursive).is_ok() {
-                self.root = Some(root.to_path_buf());
+        for root in roots {
+            if !self.roots.contains(root)
+                && self.system.watch(root, RecursiveMode::Recursive).is_ok()
+            {
+                self.roots.insert(root.clone());
             }
         }
     }
@@ -61,10 +68,7 @@ impl Watcher {
     /// Make sure changes to `file` are noticed, wherever it lives.
     pub fn include(&mut self, file: &Path) {
         let Some(folder) = file.parent() else { return };
-        let covered = self
-            .root
-            .as_deref()
-            .is_some_and(|root| folder.starts_with(root));
+        let covered = self.roots.iter().any(|root| folder.starts_with(root));
         if !covered
             && !self.folders.contains(folder)
             && self

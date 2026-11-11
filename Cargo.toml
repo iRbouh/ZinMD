@@ -2,7 +2,7 @@
 name = "zinmd"
 version = "0.1.0"
 edition = "2024"
-description = "A fast native Markdown editor and viewer"
+description = "A fast native Markdown reader and editor"
 license = "MIT"
 repository = "https://github.com/iRbouh/ZinMD"
 readme = "README.md"
@@ -26,12 +26,27 @@ data-url = "0.3"
 futures = "0.3"
 # Tells us when files change on disk.
 notify = "8.2.2"
+# What the libraries under the app report, shown when `ZINMD_TRACE` is set.
+log = "0.4"
 
 # Only for the `shot` feature: lets the app save a picture of its own window.
 # Listed under other names so they never shadow `gpui_kit::*` in our code.
 gpui_shot = { package = "gpui-pre", version = "=0.3.12", optional = true, features = ["test-support"] }
 gpui_platform_shot = { package = "gpui-pre-platform", version = "=0.3.12", optional = true, features = ["test-support"] }
-trash = { version = "5", default-features = false }
+# Without its date library. It must be told how to reach the bin on Linux
+# (the way desktops agree on) and how the system's own components are entered
+# on Windows (the way a window's thread uses).
+trash = { version = "5", default-features = false, features = ["freedesktop", "coinit_apartmentthreaded"] }
+
+# The window changes shape between the page and the editor, and keeps the
+# proportions of a sheet of paper while it is a page. AppKit is asked directly.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+raw-window-handle = "0.6"
+
+# Puts the icon inside the program file on Windows. See build.rs.
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
 
 [features]
 # Developer tool: `ZINMD_SHOT=out.png` renders one frame to a PNG and quits.
@@ -47,3 +62,44 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# The Linux packages. `scripts/package-linux.sh` builds them; the paths under
+# target/release stand for wherever the build really went.
+[package.metadata.deb]
+name = "zinmd"
+maintainer = "ZinMD <iRbouh@users.noreply.github.com>"
+copyright = "2026, Ismail RBOUH"
+section = "text"
+priority = "optional"
+depends = "$auto"
+# The window is drawn through Vulkan, which a desktop already has.
+recommends = "libvulkan1"
+extended-description = """\
+ZinMD opens a Markdown file as a page to read, and turns into an editor \
+with a live preview when asked. It draws diagrams and maths itself, and \
+starts in a fraction of a second."""
+assets = [
+    ["target/release/zinmd", "usr/bin/", "755"],
+    ["packaging/linux/app.zinmd.ZinMD.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/icons/48.png", "usr/share/icons/hicolor/48x48/apps/app.zinmd.ZinMD.png", "644"],
+    ["packaging/linux/icons/64.png", "usr/share/icons/hicolor/64x64/apps/app.zinmd.ZinMD.png", "644"],
+    ["packaging/linux/icons/128.png", "usr/share/icons/hicolor/128x128/apps/app.zinmd.ZinMD.png", "644"],
+    ["packaging/linux/icons/256.png", "usr/share/icons/hicolor/256x256/apps/app.zinmd.ZinMD.png", "644"],
+    ["packaging/linux/icons/512.png", "usr/share/icons/hicolor/512x512/apps/app.zinmd.ZinMD.png", "644"],
+    ["README.md", "usr/share/doc/zinmd/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "zinmd"
+summary = "A fast native Markdown reader and editor"
+assets = [
+    { source = "target/release/zinmd", dest = "/usr/bin/zinmd", mode = "755" },
+    { source = "packaging/linux/app.zinmd.ZinMD.desktop", dest = "/usr/share/applications/app.zinmd.ZinMD.desktop", mode = "644" },
+    { source = "packaging/linux/icons/48.png", dest = "/usr/share/icons/hicolor/48x48/apps/app.zinmd.ZinMD.png", mode = "644" },
+    { source = "packaging/linux/icons/64.png", dest = "/usr/share/icons/hicolor/64x64/apps/app.zinmd.ZinMD.png", mode = "644" },
+    { source = "packaging/linux/icons/128.png", dest = "/usr/share/icons/hicolor/128x128/apps/app.zinmd.ZinMD.png", mode = "644" },
+    { source = "packaging/linux/icons/256.png", dest = "/usr/share/icons/hicolor/256x256/apps/app.zinmd.ZinMD.png", mode = "644" },
+    { source = "packaging/linux/icons/512.png", dest = "/usr/share/icons/hicolor/512x512/apps/app.zinmd.ZinMD.png", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/zinmd/LICENSE", mode = "644", doc = true },
+    { source = "README.md", dest = "/usr/share/doc/zinmd/README.md", mode = "644", doc = true },
+]

@@ -4,7 +4,7 @@
 //! window is being drawn. The first time a diagram is shown it is sent to a
 //! background thread; until the picture is ready the block shows the previous
 //! picture drawn at that spot, so a diagram being typed updates without a flash.
-//! Pictures are cached by source and appearance.
+//! Pictures are cached by source, appearance and accent colour.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -18,7 +18,7 @@ use gpui_kit::component::text::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::theme::{ActivePalette as _, Palette, size};
+use crate::theme::{self, Accent, ActivePalette as _, Palette, size};
 
 /// Pixels drawn per point, so diagrams stay sharp on Retina displays.
 const SCALE: f32 = 2.;
@@ -39,8 +39,9 @@ enum Entry {
     Failed(SharedString),
 }
 
-/// Diagram source hash, and whether it was drawn for the dark appearance.
-type Key = (u64, bool);
+/// Diagram source hash, whether it was drawn for the dark appearance, and in
+/// which accent colour.
+type Key = (u64, bool, Accent);
 
 #[derive(Default)]
 struct Diagrams {
@@ -116,9 +117,10 @@ impl MarkdownPlugin for Mermaid {
             return frame;
         };
 
-        let key = (source.hash, cx.theme().is_dark());
+        let key = (source.hash, cx.theme().is_dark(), theme::accent(cx));
         if !cx.default_global::<Diagrams>().entries.contains_key(&key) {
-            draw_in_background(source, key, &p, cx);
+            // The colours the app is settling on, not ones caught partway through a fade.
+            draw_in_background(source, key, &theme::settled(cx), cx);
         }
         let diagrams = cx.global::<Diagrams>();
         let previous = diagrams.latest.get(&source.start).cloned();
@@ -297,8 +299,12 @@ fn environment() -> Result<&'static merman::SvgEnvironment, String> {
     ENVIRONMENT
         .get_or_init(|| {
             use merman::svg::export::{NativeFontContext, NativeFontLimits};
-            let font = std::fs::read("/System/Library/Fonts/Helvetica.ttc")
-                .map_err(|error| format!("no diagram font: {error}"))?;
+            // The system's plain font, or the editor's own where there is none.
+            let font = crate::system::sans_font().unwrap_or_else(|| {
+                crate::settings::EditorFont::JetBrainsMono
+                    .regular()
+                    .to_vec()
+            });
             let fonts = NativeFontContext::from_font_bytes(
                 [font],
                 NativeFontLimits::default(),
@@ -355,7 +361,7 @@ fn draw(code: &str) -> Result<Picture, String> {
 #[cfg(test)]
 mod tests {
     use super::{draw, themed};
-    use crate::theme::Palette;
+    use crate::theme::{Accent, Palette};
 
     /// Draws real diagrams. Set `ZINMD_DIAGRAMS=<folder>` to keep the pictures.
     #[test]
@@ -375,7 +381,11 @@ mod tests {
             ),
         ];
         for (name, code) in diagrams {
-            for (mode, palette) in [("light", Palette::light()), ("dark", Palette::dark())] {
+            let accent = Accent::Mustard;
+            for (mode, palette) in [
+                ("light", Palette::light(accent)),
+                ("dark", Palette::dark(accent)),
+            ] {
                 let picture =
                     draw(&themed(code, &palette)).unwrap_or_else(|error| panic!("{name}: {error}"));
                 let (width, height) = (

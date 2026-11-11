@@ -1,4 +1,5 @@
-//! What the user chose, kept between launches: the editor font and its size.
+//! What the user chose, kept between launches: the accent colour, the editor
+//! font and its size.
 //!
 //! Stored as a small JSON file in the user's Application Support folder. It is
 //! read once, before the window opens; a missing or damaged file means defaults.
@@ -8,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use gpui_kit::*;
+
+use crate::theme::Accent;
 
 /// The fonts offered for the editor: the two most popular open coding fonts,
 /// which ship inside the app, and the one every Mac has.
@@ -62,6 +65,11 @@ impl EditorFont {
         }
     }
 
+    /// The upright, regular weight of a font that ships with the app.
+    pub fn regular(self) -> &'static [u8] {
+        self.files().first().copied().unwrap_or_default()
+    }
+
     /// Make the font usable. Fonts that ship with the app are only handed to
     /// the text system when first needed, so the ones not in use cost nothing.
     pub fn load(self, cx: &App) {
@@ -86,6 +94,7 @@ const FONT_SIZES: std::ops::RangeInclusive<f32> = 9. ..=32.;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
+    pub accent: Accent,
     pub font: EditorFont,
     pub font_size: f32,
 }
@@ -95,6 +104,7 @@ impl Global for Settings {}
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            accent: Accent::default(),
             font: EditorFont::JetBrainsMono,
             font_size: DEFAULT_FONT_SIZE,
         }
@@ -114,6 +124,12 @@ impl Settings {
         let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
             return settings;
         };
+        if let Some(name) = json["accent"].as_str() {
+            settings.accent = Accent::ALL
+                .into_iter()
+                .find(|accent| accent.label() == name)
+                .unwrap_or(settings.accent);
+        }
         if let Some(name) = json["editor_font"].as_str() {
             settings.font = EditorFont::ALL
                 .into_iter()
@@ -127,7 +143,11 @@ impl Settings {
     }
 
     fn to_json(self) -> String {
-        let json = serde_json::json!({ "editor_font": self.font.label(), "editor_font_size": self.font_size });
+        let json = serde_json::json!({
+            "accent": self.accent.label(),
+            "editor_font": self.font.label(),
+            "editor_font_size": self.font_size,
+        });
         serde_json::to_string_pretty(&json).unwrap_or_default()
     }
 
@@ -152,10 +172,12 @@ fn file() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{EditorFont, Settings};
+    use crate::theme::Accent;
 
     #[test]
     fn round_trips() {
         let settings = Settings {
+            accent: Accent::Sky,
             font: EditorFont::FiraCode,
             font_size: 15.,
         };
@@ -166,13 +188,26 @@ mod tests {
     fn falls_back_to_defaults() {
         assert_eq!(Settings::parse(""), Settings::default());
         assert_eq!(Settings::parse("{ not json"), Settings::default());
-        // An unknown font keeps the default; a wild size is brought into range.
-        let odd = Settings::parse(r#"{"editor_font": "Comic Sans", "editor_font_size": 400}"#);
+        // An unknown colour or font keeps the default; a wild size is brought into range.
+        let odd = Settings::parse(
+            r#"{"accent": "Beige", "editor_font": "Comic Sans", "editor_font_size": 400}"#,
+        );
         assert_eq!(
             odd,
             Settings {
+                accent: Accent::Mustard,
                 font: EditorFont::JetBrainsMono,
                 font_size: 32.
+            }
+        );
+        // Settings written before there were colours to choose from still load.
+        let old = Settings::parse(r#"{"editor_font": "Menlo", "editor_font_size": 14}"#);
+        assert_eq!(
+            old,
+            Settings {
+                accent: Accent::Mustard,
+                font: EditorFont::Menlo,
+                font_size: 14.
             }
         );
     }

@@ -1,43 +1,71 @@
-//! Where the user left off: the window, the folder, the open tabs and the
-//! layout. Written as things change and read back at the next launch, so the
-//! app opens the way it was closed.
+//! Where the user left off: the windows, the folders in the side panel, the
+//! open files and the layout. Written as things change and read back at the
+//! next launch, so the app opens the way it was closed.
 
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
+/// A folder of the side panel, and how it was left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FolderState {
+    pub path: PathBuf,
+    pub pinned: bool,
+    /// Whether its files were listed under its name.
+    pub open: bool,
+    /// The subfolders that were open.
+    pub open_dirs: Vec<PathBuf>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Session {
-    /// The window's place and size on screen: x, y, width, height.
-    pub window: Option<[f32; 4]>,
-    pub root: Option<PathBuf>,
-    pub tabs: Vec<PathBuf>,
-    /// Which of `tabs` was on show.
-    pub active: usize,
+    /// The window's place and size on screen while reading: x, y, width, height.
+    pub page: Option<[f32; 4]>,
+    /// The same for the editor, which is a wider window.
+    pub desk: Option<[f32; 4]>,
+    /// The folders of the side panel, in the order they were shown.
+    pub folders: Vec<FolderState>,
+    /// The files that were open on their own, outside any of the folders.
+    pub files: Vec<PathBuf>,
+    /// The file that was on show.
+    pub active: Option<PathBuf>,
     /// "editor", "split" or "preview".
     pub view: String,
     pub sidebar_open: bool,
     pub sidebar_width: f32,
+    /// Whether the outline at the foot of the side panel was showing its headings.
+    pub outline_open: bool,
     /// The editor's share of the document area in split view.
     pub split: f32,
     pub scroll_sync: bool,
+    /// How far down the side panel was scrolled.
+    pub panel_scroll: f32,
+    /// How far each file has been read, 0 to 1: the furthest point reached.
+    pub progress: Vec<(PathBuf, f32)>,
 }
 
 impl Default for Session {
     fn default() -> Self {
         Self {
-            window: None,
-            root: None,
-            tabs: Vec::new(),
-            active: 0,
+            page: None,
+            desk: None,
+            folders: Vec::new(),
+            files: Vec::new(),
+            active: None,
             view: "split".into(),
             sidebar_open: true,
-            sidebar_width: 248.,
+            sidebar_width: 264.,
+            outline_open: true,
             split: 0.5,
             scroll_sync: true,
+            panel_scroll: 0.,
+            progress: Vec::new(),
         }
     }
 }
+
+/// How many files' reading progress is kept. The most recently read stay.
+pub const PROGRESS_KEPT: usize = 300;
 
 impl Session {
     pub fn load() -> Self {
@@ -52,24 +80,60 @@ impl Session {
         };
         let number = |key: &str| json[key].as_f64().map(|value| value as f32);
         let path = |value: &Value| value.as_str().map(PathBuf::from);
-
-        if let Some(window) = json["window"].as_array().filter(|window| window.len() == 4) {
-            let window: Vec<f32> = window
+        let paths = |value: &Value| -> Vec<PathBuf> {
+            value
+                .as_array()
+                .map(|list| list.iter().filter_map(path).collect())
+                .unwrap_or_default()
+        };
+        let window = |key: &str| {
+            let window: Vec<f32> = json[key]
+                .as_array()?
                 .iter()
                 .filter_map(|value| value.as_f64())
                 .map(|value| value as f32)
                 .collect();
             // A window too small to use is not worth coming back to.
-            if window.len() == 4 && window[2] >= 400. && window[3] >= 300. {
-                session.window = Some([window[0], window[1], window[2], window[3]]);
-            }
-        }
-        session.root = path(&json["root"]);
-        session.tabs = json["tabs"]
+            (window.len() == 4 && window[2] >= 400. && window[3] >= 300.)
+                .then(|| [window[0], window[1], window[2], window[3]])
+        };
+
+        session.page = window("page");
+        // Before there was a page to read, the one window was the editor's.
+        session.desk = window("desk").or_else(|| window("window"));
+        session.folders = json["folders"]
             .as_array()
-            .map(|tabs| tabs.iter().filter_map(path).collect())
+            .map(|folders| {
+                folders
+                    .iter()
+                    .filter_map(|folder| {
+                        Some(FolderState {
+                            path: path(&folder["path"])?,
+                            pinned: folder["pinned"].as_bool().unwrap_or(false),
+                            open: folder["open"].as_bool().unwrap_or(true),
+                            open_dirs: paths(&folder["open_dirs"]),
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
-        session.active = json["active"].as_u64().unwrap_or(0) as usize;
+        // Sessions written when the panel showed a single folder.
+        if let Some(root) = path(&json["root"]).filter(|_| json["folders"].is_null()) {
+            session.folders.push(FolderState {
+                path: root,
+                pinned: false,
+                open: true,
+                open_dirs: Vec::new(),
+            });
+        }
+        session.files = match json["files"].is_null() {
+            true => paths(&json["tabs"]),
+            false => paths(&json["files"]),
+        };
+        session.active = path(&json["active"]).or_else(|| {
+            let shown = json["active"].as_u64()? as usize;
+            session.files.get(shown).cloned()
+        });
         if let Some(view) = json["view"]
             .as_str()
             .filter(|view| ["editor", "split", "preview"].contains(view))
@@ -81,23 +145,58 @@ impl Session {
             .unwrap_or(session.sidebar_open);
         session.sidebar_width = number("sidebar_width")
             .unwrap_or(session.sidebar_width)
-            .clamp(180., 480.);
+            .clamp(200., 480.);
+        session.outline_open = json["outline_open"].as_bool().unwrap_or(true);
         session.split = number("split").unwrap_or(session.split).clamp(0.2, 0.8);
         session.scroll_sync = json["scroll_sync"].as_bool().unwrap_or(session.scroll_sync);
+        session.panel_scroll = number("panel_scroll").unwrap_or(0.).max(0.);
+        session.progress = json["progress"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|entry| {
+                        let read = entry["read"].as_f64()? as f32;
+                        Some((path(&entry["path"])?, read.clamp(0., 1.)))
+                    })
+                    .take(PROGRESS_KEPT)
+                    .collect()
+            })
+            .unwrap_or_default();
         session
     }
 
     fn to_json(&self) -> String {
+        let folders: Vec<Value> = self
+            .folders
+            .iter()
+            .map(|folder| {
+                json!({
+                    "path": folder.path,
+                    "pinned": folder.pinned,
+                    "open": folder.open,
+                    "open_dirs": folder.open_dirs,
+                })
+            })
+            .collect();
+        let progress: Vec<Value> = self
+            .progress
+            .iter()
+            .map(|(path, read)| json!({ "path": path, "read": read }))
+            .collect();
         let json = json!({
-            "window": self.window,
-            "root": self.root,
-            "tabs": self.tabs,
+            "page": self.page,
+            "desk": self.desk,
+            "folders": folders,
+            "files": self.files,
             "active": self.active,
             "view": self.view,
             "sidebar_open": self.sidebar_open,
             "sidebar_width": self.sidebar_width,
+            "outline_open": self.outline_open,
             "split": self.split,
             "scroll_sync": self.scroll_sync,
+            "panel_scroll": self.panel_scroll,
+            "progress": progress,
         });
         serde_json::to_string_pretty(&json).unwrap_or_default()
     }
@@ -116,29 +215,43 @@ pub fn data_dir() -> PathBuf {
     if let Some(folder) = std::env::var_os("ZINMD_DATA") {
         return PathBuf::from(folder);
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join("Library/Application Support/ZinMD")
+    crate::system::data_dir()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Session;
+    use super::{FolderState, Session};
     use std::path::PathBuf;
 
     #[test]
     fn round_trips() {
         let session = Session {
-            window: Some([120., 80., 1200., 800.]),
-            root: Some(PathBuf::from("/notes")),
-            tabs: vec![PathBuf::from("/notes/a.md"), PathBuf::from("/notes/b c.md")],
-            active: 1,
+            page: Some([400., 40., 640., 905.]),
+            desk: Some([120., 80., 1200., 800.]),
+            folders: vec![
+                FolderState {
+                    path: PathBuf::from("/notes"),
+                    pinned: true,
+                    open: true,
+                    open_dirs: vec![PathBuf::from("/notes/api")],
+                },
+                FolderState {
+                    path: PathBuf::from("/blog posts"),
+                    pinned: false,
+                    open: false,
+                    open_dirs: Vec::new(),
+                },
+            ],
+            files: vec![PathBuf::from("/tmp/a.md"), PathBuf::from("/tmp/b c.md")],
+            active: Some(PathBuf::from("/notes/api/overview.md")),
             view: "preview".into(),
             sidebar_open: false,
             sidebar_width: 300.,
+            outline_open: false,
             split: 0.4,
             scroll_sync: false,
+            panel_scroll: 96.,
+            progress: vec![(PathBuf::from("/notes/a.md"), 0.5)],
         };
         assert_eq!(Session::parse(&session.to_json()), session);
     }
@@ -149,11 +262,23 @@ mod tests {
         assert_eq!(Session::parse("[1, 2"), Session::default());
         // Values out of range are brought back in; an unusable window is dropped.
         let odd = Session::parse(
-            r#"{"view": "sideways", "split": 7, "sidebar_width": 5, "window": [0, 0, 10, 10]}"#,
+            r#"{"view": "sideways", "split": 7, "sidebar_width": 5, "page": [0, 0, 10, 10]}"#,
         );
         assert_eq!(
-            (odd.view.as_str(), odd.split, odd.sidebar_width, odd.window),
-            ("split", 0.8, 180., None)
+            (odd.view.as_str(), odd.split, odd.sidebar_width, odd.page),
+            ("split", 0.8, 200., None)
         );
+    }
+
+    #[test]
+    fn reads_a_session_from_before_folders() {
+        let old = Session::parse(
+            r#"{"window": [10, 20, 1280, 820], "root": "/notes",
+                "tabs": ["/notes/a.md", "/notes/b.md"], "active": 1}"#,
+        );
+        assert_eq!(old.desk, Some([10., 20., 1280., 820.]));
+        assert_eq!(old.folders.len(), 1);
+        assert_eq!(old.folders[0].path, PathBuf::from("/notes"));
+        assert_eq!(old.active, Some(PathBuf::from("/notes/b.md")));
     }
 }

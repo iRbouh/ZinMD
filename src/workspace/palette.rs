@@ -22,14 +22,17 @@ enum Target {
     Command,
 }
 
+/// One thing the palette offers: its icon, its words, and what it does when
+/// it is a command.
+type Choice = (IconName, SharedString, Option<Box<dyn Action>>);
+/// The choices shown under one title.
+type Group = (SharedString, Vec<Choice>);
+
 pub(super) struct CommandPalette {
     state: Entity<CommandState>,
     /// One list of targets per group, in the order the groups are shown.
     targets: Rc<Vec<Vec<Target>>>,
-    groups: Vec<(
-        SharedString,
-        Vec<(IconName, SharedString, Option<Box<dyn Action>>)>,
-    )>,
+    groups: Vec<Group>,
     /// Whether this palette searches the text of the folder's files, rather
     /// than offering headings, files and commands.
     searching: bool,
@@ -65,32 +68,29 @@ impl Workspace {
             groups.push(("Headings".into(), rows));
         }
 
-        if !self.file_index.is_empty() {
-            let root = self.tree.root.clone().unwrap_or_default();
-            let label = |path: &PathBuf| {
-                SharedString::from(
-                    path.strip_prefix(&root)
-                        .unwrap_or(path)
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-            };
-            let rows = self
-                .file_index
+        let files = self.all_files();
+        if !files.is_empty() {
+            let rows = files
                 .iter()
-                .map(|path| (IconName::FileText, label(path), None))
+                .map(|path| (IconName::FileText, self.place_of(path), None))
                 .collect();
-            targets.push(self.file_index.iter().cloned().map(Target::File).collect());
+            targets.push(files.into_iter().map(Target::File).collect());
             groups.push(("Files".into(), rows));
         }
 
         let commands: Vec<(IconName, &str, Box<dyn Action>)> = vec![
+            (
+                IconName::BookOpen,
+                "Read, or edit: switch between the page and the editor",
+                Box::new(ToggleMode),
+            ),
+            (IconName::Search, "Search files", Box::new(FocusSearch)),
             (IconName::Pencil, "View: Editor", Box::new(ViewEditor)),
             (IconName::Columns2, "View: Split", Box::new(ViewSplit)),
             (IconName::Eye, "View: Preview", Box::new(ViewPreview)),
             (
                 IconName::PanelLeft,
-                "Show or hide the sidebar",
+                "Show or hide the side panel",
                 Box::new(ToggleSidebar),
             ),
             (
@@ -160,8 +160,7 @@ impl Workspace {
 
     /// Search the folder for what was typed, off the main thread, and show the lines found.
     fn search_folder(&mut self, query: String, cx: &mut Context<Self>) {
-        let files = self.file_index.clone();
-        let root = self.tree.root.clone().unwrap_or_default();
+        let files = self.all_files();
         self._search = cx.spawn(async move |this, cx| {
             // Let a burst of typing settle: only the last query is worth running.
             cx.background_executor()
@@ -172,23 +171,20 @@ impl Workspace {
                 .spawn(async move { crate::search::run(&files, &query, 200) })
                 .await;
             this.update(cx, |this, cx| {
-                let Some(palette) = this.palette.as_mut().filter(|palette| palette.searching)
-                else {
+                if !this
+                    .palette
+                    .as_ref()
+                    .is_some_and(|palette| palette.searching)
+                {
                     return;
-                };
+                }
                 // One group per file, in the order the files were searched.
                 let (mut targets, mut groups): (Vec<Vec<Target>>, Vec<(SharedString, Vec<_>)>) =
                     (Vec::new(), Vec::new());
                 let mut current: Option<&PathBuf> = None;
                 for hit in &hits {
                     if current != Some(&hit.path) {
-                        let name = hit
-                            .path
-                            .strip_prefix(&root)
-                            .unwrap_or(&hit.path)
-                            .to_string_lossy()
-                            .into_owned();
-                        groups.push((name.into(), Vec::new()));
+                        groups.push((this.place_of(&hit.path), Vec::new()));
                         targets.push(Vec::new());
                         current = Some(&hit.path);
                     }
@@ -203,12 +199,27 @@ impl Workspace {
                         .unwrap()
                         .push(Target::Line(hit.path.clone(), hit.line));
                 }
-                palette.targets = Rc::new(targets);
-                palette.groups = groups;
+                if let Some(palette) = this.palette.as_mut() {
+                    palette.targets = Rc::new(targets);
+                    palette.groups = groups;
+                }
                 cx.notify();
             })
             .ok();
         });
+    }
+
+    /// Where a file is, said from the folder of the panel it is in: `docs/api/overview.md`.
+    fn place_of(&self, path: &Path) -> SharedString {
+        let place = match self.folder_of(path) {
+            Some(folder) => {
+                let folder = &self.folders[folder];
+                let inside = path.strip_prefix(&folder.root).unwrap_or(path);
+                format!("{}/{}", folder.name, inside.to_string_lossy())
+            }
+            None => path.to_string_lossy().into_owned(),
+        };
+        place.into()
     }
 
     pub(super) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -216,9 +227,7 @@ impl Workspace {
             // It stays on screen a moment longer, fading, with nothing left to click.
             self.palette_leaving = Some((palette, std::time::Instant::now()));
             // Typing goes back to the document.
-            if let Some(doc) = self.active_doc() {
-                doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
-            }
+            self.focus_document(window, cx);
             cx.notify();
         }
     }
@@ -276,7 +285,7 @@ impl Workspace {
         let query = cx.weak_entity();
         let mut command = Command::new(&palette.state)
             .placeholder(if searching {
-                "Search the text of every file in this folder"
+                "Search the text of every file in your folders"
             } else {
                 "Search headings, files and commands"
             })
@@ -359,25 +368,4 @@ impl Workspace {
                 ),
         )
     }
-}
-
-/// Every Markdown file under `root`, for the palette. Stops at `limit` files,
-/// so a huge folder cannot stall the background thread that runs this.
-pub(super) fn index_files(root: &Path, limit: usize) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let mut folders = vec![root.to_path_buf()];
-    while let Some(folder) = folders.pop() {
-        for row in crate::files::read_dir(&folder, 0) {
-            if row.is_dir {
-                folders.push(row.path);
-            } else {
-                found.push(row.path);
-                if found.len() >= limit {
-                    return found;
-                }
-            }
-        }
-    }
-    found.sort();
-    found
 }

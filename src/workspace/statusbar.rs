@@ -130,7 +130,6 @@ impl Workspace {
                 if words == 1 { "word" } else { "words" }
             ))
             .child(format!("{} min read", doc.stats.minutes()))
-            .child("Markdown")
             .child("UTF-8")
             .child(self.render_font_control(&p, cx))
             .children(self.opened_ms.map(|ms| {

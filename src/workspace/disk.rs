@@ -7,7 +7,7 @@ use futures::StreamExt as _;
 use gpui_kit::component::h_flex;
 use gpui_kit::*;
 
-use super::{Workspace, palette};
+use super::Workspace;
 use crate::theme::{Palette, size};
 use crate::watch;
 
@@ -27,7 +27,8 @@ impl Workspace {
         let Some((mut watcher, mut changes)) = watch::start() else {
             return;
         };
-        watcher.set_root(self.tree.root.as_deref());
+        let roots: Vec<PathBuf> = self.folders.iter().map(|f| f.root.clone()).collect();
+        watcher.set_roots(&roots);
         for doc in &self.docs {
             if let Some(path) = &doc.path {
                 watcher.include(path);
@@ -87,14 +88,19 @@ impl Workspace {
             }
         }
 
-        // Sidebar: files came or went somewhere it lists.
-        let listed = self
-            .tree
-            .root
-            .as_deref()
-            .is_some_and(|root| paths.iter().any(|path| watch::is_listed(path, root)));
-        if listed {
-            self.refresh_tree_soon(cx);
+        // The side panel: files came or went in one of its folders.
+        let changed: Vec<PathBuf> = self
+            .folders
+            .iter()
+            .filter(|folder| {
+                paths
+                    .iter()
+                    .any(|path| watch::is_listed(path, &folder.root))
+            })
+            .map(|folder| folder.root.clone())
+            .collect();
+        for root in changed {
+            self.scan_folder_soon(root, cx);
         }
         cx.notify();
     }
@@ -126,37 +132,6 @@ impl Workspace {
             editor.set_scroll_offset(scroll, cx);
         });
         self.on_edit(&editor, cx);
-    }
-
-    /// Read the folder again shortly. Several changes in a row cause one read.
-    pub(super) fn refresh_tree_soon(&mut self, cx: &mut Context<Self>) {
-        self._tree_refresh = cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(250))
-                .await;
-            let Ok(root) = this.update(cx, |this, cx| {
-                this.tree.refresh();
-                // Reading the folder again dropped the row a new name is being typed in.
-                this.place_draft();
-                cx.notify();
-                this.tree.root.clone()
-            }) else {
-                return;
-            };
-            // The palette's list of every file is rebuilt off the main thread.
-            let Some(root) = root else { return };
-            let listed = root.clone();
-            let index = cx
-                .background_executor()
-                .spawn(async move { palette::index_files(&listed, 5000) })
-                .await;
-            this.update(cx, |this, _| {
-                if this.tree.root.as_deref() == Some(root.as_path()) {
-                    this.file_index = index;
-                }
-            })
-            .ok();
-        });
     }
 
     /// Answer a notice: `keep` keeps what is in the editor, otherwise the disk wins.
@@ -201,7 +176,7 @@ impl Workspace {
             Notice::Missing => (
                 "This file is no longer on disk.",
                 "Save it again",
-                "Close the tab",
+                "Close it",
             ),
         };
         let (hover, strong) = (p.surface_hover, p.text_primary);

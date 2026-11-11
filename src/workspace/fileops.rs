@@ -1,24 +1,20 @@
-//! Managing files from the sidebar: new file, new folder, rename, move to the
-//! Trash, show in Finder. A right-click on a row offers them for that row;
-//! naming happens in the file list itself, in the row being named.
+//! Managing files from the side panel: new file, rename, move to the Trash,
+//! show in Finder. A right-click on a row offers them for that row; naming
+//! happens in the list itself, in the row being named.
 
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 
-use super::sidebar::ROW_HEIGHT;
-use super::{Workspace, titlebar};
+use super::{Mode, Workspace};
 use crate::files::Row;
-use crate::theme::size;
-use crate::ui;
 
 /// What the name being typed is for.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Naming {
-    /// A new file, or folder, inside this folder.
+    /// A new file inside this folder.
     NewFile(PathBuf),
-    NewFolder(PathBuf),
     /// A new name for this file or folder.
     Rename(PathBuf),
 }
@@ -29,7 +25,7 @@ impl Naming {
     fn is_for(&self, row: &Row) -> bool {
         match self {
             Naming::Rename(path) => *path == row.path,
-            Naming::NewFile(_) | Naming::NewFolder(_) => row.name.is_empty(),
+            Naming::NewFile(_) => row.name.is_empty(),
         }
     }
 }
@@ -43,26 +39,26 @@ pub(super) struct NameField {
 impl Workspace {
     /// The folder a "new" command should create in: the row that was
     /// right-clicked if it is a folder, the folder it is in if it is a file,
-    /// and otherwise the folder the sidebar shows.
+    /// and otherwise the folder of the document on show, when that is in the panel.
     fn target_folder(&self) -> Option<PathBuf> {
         match self.context_row.as_deref() {
             Some(path) if path.is_dir() => Some(path.to_path_buf()),
             Some(path) => path.parent().map(Path::to_path_buf),
-            None => self.tree.root.clone(),
+            None => self
+                .active_doc()
+                .and_then(|doc| doc.path.as_deref())
+                .filter(|path| self.folder_of(path).is_some())
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .or_else(|| self.folders.first().map(|folder| folder.root.clone())),
         }
     }
 
     pub(super) fn new_file_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.target_folder() {
             Some(folder) => self.ask_name(Naming::NewFile(folder), "", window, cx),
-            // No folder to create it in: an untitled tab, named when it is saved.
-            None => self.open_untitled(window, cx),
-        }
-    }
-
-    pub(super) fn new_folder_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(folder) = self.target_folder() {
-            self.ask_name(Naming::NewFolder(folder), "", window, cx);
+            // No folder to create it in: an untitled document, named when it is saved.
+            None => self.new_document(window, cx),
         }
     }
 
@@ -91,15 +87,17 @@ impl Workspace {
     ) {
         let placeholder = match &naming {
             Naming::NewFile(_) => "File name",
-            Naming::NewFolder(_) => "Folder name",
             Naming::Rename(_) => "New name",
         };
-        // The name is typed in the file list: the list, and the row, must be there to see.
-        self.sidebar_open = true;
-        if let Naming::Rename(path) = &naming {
-            if let Some(folder) = path.parent() {
-                self.tree.reveal(folder);
-            }
+        // The name is typed in the list: the panel, and the row, must be there to see.
+        match self.mode {
+            Mode::Edit => self.sidebar_open = true,
+            Mode::Read => self.reader.panel_open = true,
+        }
+        if let Naming::Rename(path) = &naming
+            && let Some(folder) = self.folder_of(path)
+        {
+            self.folders[folder].reveal(path);
         }
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -136,9 +134,7 @@ impl Workspace {
     pub(super) fn cancel_naming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.name_field.take().is_some() {
             self.place_draft();
-            if let Some(doc) = self.active_doc() {
-                doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
-            }
+            self.focus_document(window, cx);
             cx.notify();
         }
     }
@@ -163,24 +159,15 @@ impl Workspace {
         let name = field.input.read(cx).value().trim().to_string();
         // A name is one path component; anything else is a slip, not a wish.
         if name.is_empty() || name.contains('/') || name == "." || name == ".." {
-            if let Some(doc) = self.active_doc() {
-                doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
-            }
+            self.focus_document(window, cx);
             return cx.notify();
         }
         let result = match &field.naming {
             Naming::NewFile(folder) => {
                 let path = folder.join(with_extension(&name, "md"));
                 create_new(&path).map(|()| {
-                    self.tree.refresh();
+                    self.rescan_around(&path, cx);
                     self.open(path, window, cx);
-                })
-            }
-            Naming::NewFolder(folder) => {
-                let path = folder.join(&name);
-                std::fs::create_dir(&path).map(|()| {
-                    self.tree.refresh();
-                    self.tree.reveal(&path.join("."));
                 })
             }
             Naming::Rename(old) => {
@@ -207,10 +194,16 @@ impl Workspace {
                 cx,
             ));
         }
-        if let Some(doc) = self.active_doc() {
-            doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
-        }
+        self.focus_document(window, cx);
         cx.notify();
+    }
+
+    /// Read again the folder of the panel that `path` lies in.
+    fn rescan_around(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Some(folder) = self.folder_of(path) {
+            let root = self.folders[folder].root.clone();
+            self.scan_folder(root, cx);
+        }
     }
 
     /// A file or folder moved from `old` to `new`: open documents follow it.
@@ -234,12 +227,6 @@ impl Workspace {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default()
                 .into();
-            doc.tab_width = titlebar::tab_width(ui::text_width(
-                &doc.name,
-                size::FONT_UI,
-                FontWeight::MEDIUM,
-                window,
-            ));
             doc.disk = crate::watch::stamp(&path);
             doc.notice = None;
             if let Some(watcher) = &mut self.watcher {
@@ -247,11 +234,18 @@ impl Workspace {
             }
             doc.path = Some(path);
         }
-        self.tree.refresh();
-        self.refresh_tree_soon(cx);
+        // A subfolder that was open stays open under its new name.
+        for folder in &mut self.folders {
+            if folder.open_dirs.remove(old) {
+                folder.open_dirs.insert(new.to_path_buf());
+            }
+        }
+        self.rescan_around(old, cx);
+        self.rescan_around(new, cx);
         if let Some(doc) = self.active_doc() {
             window.set_window_title(&doc.name);
         }
+        self.reveal_active();
     }
 
     /// Move the right-clicked file or folder to the Trash, where it can be got back from.
@@ -269,7 +263,7 @@ impl Workspace {
             ));
             return;
         }
-        // Tabs showing what was trashed close, unless they hold unsaved edits:
+        // Documents showing what was trashed close, unless they hold unsaved edits:
         // those stay, and say their file is gone.
         let gone: Vec<usize> = self
             .docs
@@ -284,12 +278,9 @@ impl Workspace {
             .map(|doc| doc.id)
             .collect();
         for id in gone {
-            if self.docs.len() > 1 {
-                self.close_doc(id, window, cx);
-            }
+            self.close_doc(id, window, cx);
         }
-        self.tree.refresh();
-        self.refresh_tree_soon(cx);
+        self.rescan_around(&path, cx);
         cx.notify();
     }
 
@@ -321,71 +312,70 @@ impl Workspace {
         field.naming.is_for(row).then(|| field.input.clone())
     }
 
-    /// Keep the file list in step with what is being named. Something new gets
-    /// a blank row at the top of the folder it will be created in, which is
-    /// opened if it was shut. Without anything being named, that row goes.
+    /// The field for naming the file at `path`, if that is the one being
+    /// named: a file being renamed, or the blank row of one being made.
+    pub(super) fn naming_at(&self, path: &Path) -> Option<Entity<InputState>> {
+        let field = self.name_field.as_ref()?;
+        let named = match &field.naming {
+            Naming::Rename(renamed) => renamed == path,
+            Naming::NewFile(folder) => unnamed(folder) == path,
+        };
+        named.then(|| field.input.clone())
+    }
+
+    /// Keep the list in step with what is being named. A new file gets a
+    /// blank row at the top of the folder it will be made in, which is opened
+    /// if it was shut. Without anything being named, that row goes.
     pub(super) fn place_draft(&mut self) {
         // A real row always has a name: an empty one marks the draft.
-        self.tree.rows.retain(|row| !row.name.is_empty());
-        let Some(naming) = self.name_field.as_ref().map(|field| field.naming.clone()) else {
+        for folder in &mut self.folders {
+            folder.rows.retain(|row| !row.name.is_empty());
+        }
+        let Some(Naming::NewFile(dir)) = self.name_field.as_ref().map(|field| field.naming.clone())
+        else {
             return;
         };
-        // No real file can have this name, so the draft is never mistaken for one.
-        let unnamed = |folder: &Path| folder.join("\0");
-        let (folder, path, is_dir) = match naming {
-            Naming::NewFile(folder) => (Some(folder.clone()), unnamed(&folder), false),
-            Naming::NewFolder(folder) => (Some(folder.clone()), unnamed(&folder), true),
-            Naming::Rename(path) => {
-                if self.tree.rows.iter().any(|row| row.path == path) {
-                    return;
-                }
-                // A file from outside the folder shown has no row: it borrows one.
-                let is_dir = path.is_dir();
-                (None, path, is_dir)
-            }
+        let Some(folder) = self.folder_of(&dir) else {
+            return;
         };
-        let under = folder.and_then(|folder| {
-            let mut rows = self.tree.rows.iter();
-            rows.position(|row| row.is_dir && row.path == folder)
-        });
-        let (at, depth) = match under {
-            Some(ix) => {
-                if !self.tree.rows[ix].open {
-                    self.tree.toggle(ix);
-                }
-                (ix + 1, self.tree.rows[ix].depth + 1)
-            }
-            // The folder the sidebar shows has no row of its own: its files start the list.
+        let folder = &mut self.folders[folder];
+        folder.open = true;
+        // Inside a subfolder, the row goes under that subfolder's row.
+        let holds = |row: &Row| row.is_dir && dir.starts_with(&row.path);
+        if let Some(shut) = folder.rows.iter().find(|row| holds(row) && !row.open) {
+            let shut = shut.path.clone();
+            folder.toggle_dir(&shut);
+        }
+        let (at, depth) = match folder.rows.iter().position(holds) {
+            Some(under) => (under + 1, 1),
             None => (0, 0),
         };
         let draft = Row {
-            path,
+            path: unnamed(&dir),
             name: SharedString::default(),
-            is_dir,
+            way: SharedString::default(),
+            is_dir: false,
             depth,
             open: false,
+            count: 0,
         };
-        self.tree.rows.insert(at, draft);
+        folder.rows.insert(at, draft);
     }
 
-    /// Scroll the file list just enough to show the row being named.
+    /// Scroll the list just enough to show the row being named.
     fn show_naming_row(&mut self) {
-        let Some(naming) = self.name_field.as_ref().map(|field| &field.naming) else {
-            return;
-        };
-        let Some(ix) = self.tree.rows.iter().position(|row| naming.is_for(row)) else {
-            return;
-        };
-        let top = ROW_HEIGHT * ix as f32;
-        let view = self.tree_scroll.bounds().size.height;
-        let scrolled = -self.tree_scroll.offset().y;
-        if top < scrolled {
-            self.tree_scroll.set_offset(point(px(0.), -top));
-        } else if view > px(0.) && top + ROW_HEIGHT > scrolled + view {
-            self.tree_scroll
-                .set_offset(point(px(0.), -(top + ROW_HEIGHT - view)));
+        match self.name_field.as_ref().map(|field| &field.naming) {
+            Some(Naming::Rename(path)) => self.panel.show(path.clone()),
+            Some(Naming::NewFile(folder)) => self.panel.show(unnamed(folder)),
+            None => {}
         }
     }
+}
+
+/// The path that stands for a file not yet named, in `folder`. No real file
+/// can have this name, so the draft is never mistaken for one.
+fn unnamed(folder: &Path) -> PathBuf {
+    folder.join("\0")
 }
 
 /// Move a file or folder to the Trash.

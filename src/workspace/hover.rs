@@ -11,14 +11,19 @@ use gpui_kit::*;
 
 use super::Workspace;
 use crate::motion;
+use crate::theme::Accent;
 
 /// Something the pointer can be over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Hot {
     Button(&'static str),
-    Tab(usize),
+    /// A file in the side panel, by its key there.
     File(u64),
+    /// A folder's name, or a subfolder's, in the side panel.
+    Folder(u64),
     Heading(usize),
+    /// A colour in the menu of accent colours.
+    Colour(Accent),
 }
 
 impl Workspace {

@@ -4,13 +4,16 @@
 mod backup;
 mod disk;
 mod fileops;
+mod frame;
 mod hover;
+mod menu;
 mod palette;
+mod panel;
 mod panes;
-mod sidebar;
+mod reader;
 mod statusbar;
-mod titlebar;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -22,16 +25,20 @@ use gpui_kit::component::v_flex;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+// Scripted runs choose their own window size.
+#[cfg_attr(feature = "shot", allow(unused_imports))]
+pub use frame::{page_size, page_width};
+
 use crate::doc::{self, Heading, Stats};
-use crate::files::{self, FileTree};
+use crate::files::{self, Folder};
 use crate::motion;
 use crate::preview::BlockMap;
-use crate::session::Session;
+use crate::session::{FolderState, Session};
 use crate::settings::{self, EditorFont, Settings};
 use crate::startup;
 use crate::sync::{ScrollSync, Side};
+use crate::system::{self, command};
 use crate::theme::{self, ActivePalette as _, size};
-use crate::ui;
 
 actions!(
     zinmd,
@@ -40,24 +47,27 @@ actions!(
         OpenFile,
         Save,
         SaveAs,
-        CloseTab,
-        NextTab,
-        PreviousTab,
+        CloseFile,
+        LastFile,
+        ToggleMode,
         ViewEditor,
         ViewSplit,
         ViewPreview,
         ToggleSidebar,
         ToggleScrollSync,
         ToggleTheme,
+        FocusSearch,
         OpenPalette,
         FindInFolder,
         ExportHtml,
         NewFileHere,
-        NewFolderHere,
         RenameFile,
         TrashFile,
         RevealFile,
         CopyFilePath,
+        CopyFileContent,
+        PreviousSection,
+        NextSection,
         FontBigger,
         FontSmaller,
         FontReset,
@@ -71,28 +81,32 @@ actions!(
 /// Register the app's keyboard shortcuts. Call once at startup.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("cmd-n", NewFile, None),
-        KeyBinding::new("cmd-o", OpenFile, None),
-        KeyBinding::new("cmd-s", Save, None),
-        KeyBinding::new("cmd-shift-s", SaveAs, None),
-        KeyBinding::new("cmd-w", CloseTab, None),
-        KeyBinding::new("cmd-}", NextTab, None),
-        KeyBinding::new("cmd-{", PreviousTab, None),
-        KeyBinding::new("ctrl-tab", NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
-        KeyBinding::new("cmd-1", ViewEditor, None),
-        KeyBinding::new("cmd-2", ViewSplit, None),
-        KeyBinding::new("cmd-3", ViewPreview, None),
-        KeyBinding::new("cmd-\\", ToggleSidebar, None),
-        KeyBinding::new("cmd-k", OpenPalette, None),
-        KeyBinding::new("cmd-p", OpenPalette, None),
-        KeyBinding::new("cmd-shift-f", FindInFolder, None),
-        KeyBinding::new("cmd-shift-e", ExportHtml, None),
-        KeyBinding::new("cmd-=", FontBigger, None),
-        KeyBinding::new("cmd-+", FontBigger, None),
-        KeyBinding::new("cmd--", FontSmaller, None),
-        KeyBinding::new("cmd-0", FontReset, None),
-        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new(command!("n"), NewFile, None),
+        KeyBinding::new(command!("o"), OpenFile, None),
+        KeyBinding::new(command!("s"), Save, None),
+        KeyBinding::new(command!("shift-s"), SaveAs, None),
+        KeyBinding::new(command!("w"), CloseFile, None),
+        KeyBinding::new("ctrl-tab", LastFile, None),
+        // The same key goes to the editor and comes back to the page.
+        KeyBinding::new(command!("e"), ToggleMode, None),
+        // The command key with 1 to 9 belongs to the files open on their own, as it did to tabs.
+        KeyBinding::new(command!("alt-1"), ViewEditor, None),
+        KeyBinding::new(command!("alt-2"), ViewSplit, None),
+        KeyBinding::new(command!("alt-3"), ViewPreview, None),
+        KeyBinding::new(command!("\\"), ToggleSidebar, None),
+        KeyBinding::new(command!("k"), FocusSearch, None),
+        KeyBinding::new(command!("p"), OpenPalette, None),
+        KeyBinding::new(command!("shift-c"), CopyFileContent, None),
+        KeyBinding::new(command!("alt-c"), CopyFilePath, None),
+        KeyBinding::new("alt-up", PreviousSection, None),
+        KeyBinding::new("alt-down", NextSection, None),
+        KeyBinding::new(command!("shift-f"), FindInFolder, None),
+        KeyBinding::new(command!("shift-e"), ExportHtml, None),
+        KeyBinding::new(command!("="), FontBigger, None),
+        KeyBinding::new(command!("+"), FontBigger, None),
+        KeyBinding::new(command!("-"), FontSmaller, None),
+        KeyBinding::new(command!("0"), FontReset, None),
+        KeyBinding::new(command!("q"), Quit, None),
     ]);
     // Reached only when no window is there to ask about unsaved changes.
     cx.on_action(|_: &Quit, cx| cx.quit());
@@ -112,9 +126,12 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Export as HTML…", ExportHtml),
             MenuItem::separator(),
             MenuItem::action("Rename…", RenameFile),
-            MenuItem::action("Show in Finder", RevealFile),
+            MenuItem::action(system::REVEAL, RevealFile),
             MenuItem::separator(),
-            MenuItem::action("Close Tab", CloseTab),
+            MenuItem::action("Copy Content", CopyFileContent),
+            MenuItem::action("Copy Path", CopyFilePath),
+            MenuItem::separator(),
+            MenuItem::action("Close File", CloseFile),
         ]),
         Menu::new("Edit").items([
             MenuItem::action("Undo", edit::Undo),
@@ -129,12 +146,18 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Find in All Files…", FindInFolder),
         ]),
         Menu::new("View").items([
+            MenuItem::action("Read or Edit", ToggleMode),
+            MenuItem::separator(),
             MenuItem::action("Editor", ViewEditor),
             MenuItem::action("Split", ViewSplit),
             MenuItem::action("Preview", ViewPreview),
             MenuItem::separator(),
+            MenuItem::action("Search Files", FocusSearch),
             MenuItem::action("Command Palette…", OpenPalette),
-            MenuItem::action("Show or Hide Sidebar", ToggleSidebar),
+            MenuItem::action("Show or Hide Side Panel", ToggleSidebar),
+            MenuItem::action("Previous Section", PreviousSection),
+            MenuItem::action("Next Section", NextSection),
+            MenuItem::action("Go Back to the Last File", LastFile),
             MenuItem::action("Turn Scroll Sync On or Off", ToggleScrollSync),
             MenuItem::action("Switch Light and Dark", ToggleTheme),
             MenuItem::separator(),
@@ -152,7 +175,14 @@ pub fn install_menus(cx: &mut App) {
 /// What dragging the edge of the sidebar carries.
 struct DragSidebar;
 
-/// Which panes the window shows.
+/// What the window is: a page to read, or the editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Read,
+    Edit,
+}
+
+/// Which panes the editor shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewMode {
     Editor,
@@ -160,9 +190,9 @@ pub enum ViewMode {
     Preview,
 }
 
-/// One open document: a tab.
+/// One open document.
 pub struct Doc {
-    /// Stable for the life of the tab, so per-tab UI state (scroll, selection) never mixes.
+    /// Stable for as long as it is open, so per-document UI state (scroll, selection) never mixes.
     id: usize,
     path: Option<PathBuf>,
     name: SharedString,
@@ -184,9 +214,6 @@ pub struct Doc {
     /// Names the file its unsaved edits are backed up to, and the pending write.
     backup_key: String,
     _backup: Task<()>,
-    /// How wide its tab is, and when the tab was opened if it should grow in.
-    tab_width: Pixels,
-    born: Option<Instant>,
     _changes: Subscription,
     _blocks: Task<()>,
 }
@@ -195,29 +222,54 @@ impl Doc {
     fn dirty(&self) -> bool {
         self.text != self.saved
     }
+
+    /// An empty document nobody named or typed in: only a place to start from.
+    fn blank(&self) -> bool {
+        self.path.is_none() && self.text.is_empty()
+    }
 }
 
 pub struct Workspace {
     docs: Vec<Doc>,
     active: usize,
     next_doc_id: usize,
+    mode: Mode,
+    /// Counts changes of mode, so each one can fade in.
+    mode_switches: usize,
     view: ViewMode,
     sidebar_open: bool,
+    /// Whether the outline at the foot of the side panel shows its headings, or only its title.
+    outline_open: bool,
     sync_enabled: bool,
-    tree: FileTree,
-    tree_scroll: ScrollHandle,
-    /// A folder of the file list sliding open or shut.
-    tree_motion: Option<sidebar::TreeMotion>,
-    /// Tabs of the last session still to bring back: their files, and which
-    /// of them is the one already open.
-    restore: Option<(Vec<PathBuf>, usize)>,
+    /// The folders of the side panel, in the order they are shown.
+    folders: Vec<Folder>,
+    /// Folders being read from disk, each off the main thread.
+    _scans: HashMap<PathBuf, Task<()>>,
+    /// The side panel: where it is scrolled, what is typed in its search, what the pointer is on.
+    panel: panel::Panel,
+    /// The page: its menu, its rail, how far each file has been read.
+    reader: reader::Reader,
+    /// The document that was on show before this one, to go back to.
+    last_shown: Option<usize>,
+    /// Files of the last session still to bring back.
+    restore: Vec<PathBuf>,
     /// The session as last written down, to notice when it changes.
     saved_session: Option<Session>,
+    session_checked: Instant,
     _session_save: Task<()>,
+    _session_check: Task<()>,
+    /// Where the window was while reading, and while editing: each shape is
+    /// remembered while the window wears the other.
+    page: Option<[f32; 4]>,
+    desk: Option<[f32; 4]>,
+    /// The window on its way from one shape to the other.
+    reshaping: bool,
+    _reshape: Task<()>,
+    /// Frames left in which the source and the page are lined up after a change of mode.
+    carry: u8,
     /// Tells us when files change on disk; started after the first frame.
     watcher: Option<crate::watch::Watcher>,
     _watching: Task<()>,
-    _tree_refresh: Task<()>,
     /// The row of the file list that was last right-clicked: what its menu acts on.
     context_row: Option<PathBuf>,
     /// The row a menu is open on, shown marked until the menu goes.
@@ -226,17 +278,15 @@ pub struct Workspace {
     name_field: Option<fileops::NameField>,
     /// What the pointer is over, for hover that fades.
     hot: Option<hover::Hot>,
-    /// Closed tabs still shrinking out of the tab strip.
-    ghost_tabs: Vec<titlebar::GhostTab>,
+    /// Whether the menu of accent colours is down.
+    colours_open: bool,
     /// Counts changes of the document on show, so each one can fade in.
     switches: usize,
-    /// Every Markdown file under the open folder, for the command palette.
-    file_index: Vec<PathBuf>,
     palette: Option<palette::CommandPalette>,
     _search: Task<()>,
     /// The palette just closed, fading out, and when it closed.
     palette_leaving: Option<(palette::CommandPalette, Instant)>,
-    /// How wide the sidebar is when open; dragging its edge changes this.
+    /// How wide the side panel is when open; dragging its edge changes this.
     sidebar_width: Pixels,
     /// The editor's share of the document area in split view.
     split: f32,
@@ -256,6 +306,21 @@ pub struct Workspace {
     frames: Vec<Instant>,
 }
 
+/// The window's place and size, as the session keeps it.
+fn bounds_of(window: &Window) -> [f32; 4] {
+    let bounds = match window.window_bounds() {
+        WindowBounds::Windowed(bounds)
+        | WindowBounds::Maximized(bounds)
+        | WindowBounds::Fullscreen(bounds) => bounds,
+    };
+    [
+        bounds.origin.x.into(),
+        bounds.origin.y.into(),
+        bounds.size.width.into(),
+        bounds.size.height.into(),
+    ]
+}
+
 impl Workspace {
     /// `path` may be a Markdown file, a folder, or nothing.
     pub fn new(
@@ -265,33 +330,45 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let panel = panel::Panel::new(session.panel_scroll, window, cx);
         let mut this = Self {
             docs: Vec::new(),
             active: 0,
             next_doc_id: 0,
+            // A file is opened to be read: the page comes first, the editor is one key away.
+            mode: frame::starting_mode(),
+            mode_switches: 0,
             view: match session.view.as_str() {
                 "editor" => ViewMode::Editor,
                 "preview" => ViewMode::Preview,
                 _ => ViewMode::Split,
             },
             sidebar_open: session.sidebar_open,
+            outline_open: session.outline_open,
             sync_enabled: session.scroll_sync,
-            restore: None,
+            folders: Vec::new(),
+            _scans: HashMap::new(),
+            panel,
+            reader: reader::Reader::new(session.progress),
+            last_shown: None,
+            restore: Vec::new(),
             saved_session: None,
+            session_checked: started,
             _session_save: Task::ready(()),
-            tree: FileTree::default(),
-            tree_scroll: ScrollHandle::new(),
-            tree_motion: None,
+            _session_check: Task::ready(()),
+            page: session.page,
+            desk: session.desk,
+            reshaping: false,
+            _reshape: Task::ready(()),
+            carry: 0,
             watcher: None,
             _watching: Task::ready(()),
-            _tree_refresh: Task::ready(()),
             context_row: None,
             menu_row: None,
             name_field: None,
             hot: None,
-            ghost_tabs: Vec::new(),
+            colours_open: false,
             switches: 0,
-            file_index: Vec::new(),
             palette: None,
             _search: Task::ready(()),
             palette_leaving: None,
@@ -308,36 +385,54 @@ impl Workspace {
             frames: Vec::new(),
         };
 
+        // The folders of last time come back as they were left.
+        for state in session.folders {
+            if state.path.is_dir() && !this.folders.iter().any(|f| f.root == state.path) {
+                let mut folder = Folder::new(state.path);
+                folder.pinned = state.pinned;
+                folder.open = state.open;
+                folder.open_dirs = state.open_dirs.into_iter().collect();
+                this.folders.push(folder);
+            }
+        }
+
         let path = path.map(|path| path.canonicalize().unwrap_or(path));
-        let (root, file) = match path {
+        let file = match path {
             Some(dir) if dir.is_dir() => {
                 let readme = ["README.md", "readme.md", "index.md"]
                     .iter()
                     .map(|name| dir.join(name))
                     .find(|p| p.is_file());
-                (Some(dir), readme)
+                if !this.folders.iter().any(|folder| folder.root == dir) {
+                    this.folders.push(Folder::new(dir));
+                }
+                readme
             }
-            Some(file) => (file.parent().map(Path::to_path_buf), Some(file)),
+            Some(file) => Some(file),
             // Nothing asked for: pick up where the last session left off.
             None => {
-                let tabs: Vec<PathBuf> = session
-                    .tabs
+                let mut files: Vec<PathBuf> = session
+                    .files
                     .into_iter()
-                    .filter(|tab| tab.is_file())
+                    .filter(|file| file.is_file())
                     .collect();
-                let shown = session.active.min(tabs.len().saturating_sub(1));
-                let file = tabs.get(shown).cloned();
-                if tabs.len() > 1 {
-                    this.restore = Some((tabs, shown));
-                }
-                (session.root.filter(|root| root.is_dir()), file)
+                let shown = session
+                    .active
+                    .filter(|file| file.is_file())
+                    .or_else(|| files.first().cloned());
+                files.retain(|file| Some(file) != shown.as_ref());
+                this.restore = files;
+                shown
             }
         };
         match file {
             Some(file) => this.open_path(&file, window, cx),
             None => this.open_untitled(window, cx),
         }
-        this.set_root(root, cx);
+        let roots: Vec<PathBuf> = this.folders.iter().map(|f| f.root.clone()).collect();
+        for root in roots {
+            this.scan_folder(root, cx);
+        }
 
         // The red window button: ask about unsaved changes before closing.
         let weak = cx.weak_entity();
@@ -377,6 +472,41 @@ impl Workspace {
         self.docs.iter().position(|doc| doc.id == id)
     }
 
+    /// The folder of the panel that `path` lies in: the innermost, if folders nest.
+    fn folder_of(&self, path: &Path) -> Option<usize> {
+        self.folders
+            .iter()
+            .enumerate()
+            .filter(|(_, folder)| folder.contains(path))
+            .max_by_key(|(_, folder)| folder.root.as_os_str().len())
+            .map(|(ix, _)| ix)
+    }
+
+    /// The documents open on their own, outside every folder of the panel, in
+    /// the order they were opened. A blank page is not one of them.
+    fn singles(&self) -> Vec<usize> {
+        (0..self.docs.len())
+            .filter(|ix| {
+                let doc = &self.docs[*ix];
+                match &doc.path {
+                    Some(path) => self.folder_of(path).is_none(),
+                    None => !doc.blank(),
+                }
+            })
+            .collect()
+    }
+
+    /// Typing goes to the document: into the source when editing. A page is
+    /// only read, so there the window itself listens, for the keys that scroll.
+    fn focus_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match (self.mode, self.active_doc()) {
+            (Mode::Edit, Some(doc)) if self.view != ViewMode::Preview => {
+                doc.editor.update(cx, |editor, cx| editor.focus(window, cx))
+            }
+            _ => self.focus.focus(window, cx),
+        }
+    }
+
     // ------------------------------------------------------------ documents
 
     /// Open what the system, or a drop on the window, asked for, and come to the front.
@@ -396,29 +526,27 @@ impl Workspace {
         cx.activate(true);
     }
 
-    /// Open a file in a tab, or show a folder in the sidebar.
+    /// Show a file, or add a folder to the side panel.
     fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let path = path.canonicalize().unwrap_or(path);
         if path.is_dir() {
-            self.set_root(Some(path), cx);
+            self.add_folder(path, cx);
             return;
         }
-        if self.tree.root.is_none() {
-            self.set_root(path.parent().map(Path::to_path_buf), cx);
-        }
-        // An untouched empty tab was only a placeholder: the file takes its place.
+        // An untouched blank page was only a placeholder: the file takes its place.
         let placeholder = match self.docs.as_slice() {
-            [only] if only.path.is_none() && only.text.is_empty() => Some(only.id),
+            [only] if only.blank() => Some(only.id),
             _ => None,
         };
         self.open_path(&path, window, cx);
         if let Some(ix) = placeholder.and_then(|id| self.doc_ix(id)) {
             self.docs.remove(ix);
             self.active = self.active.saturating_sub(1);
+            self.last_shown = None;
         }
     }
 
-    /// Show `path` in a tab, reusing its tab if it is already open.
+    /// Show `path`, reusing the document if it is already open.
     fn open_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self
             .docs
@@ -443,6 +571,14 @@ impl Workspace {
         self.push_doc(None, "Untitled.md".into(), String::new(), window, cx);
     }
 
+    /// A new document is for writing: it opens in the editor.
+    fn new_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.active_doc().is_some_and(Doc::blank) {
+            self.open_untitled(window, cx);
+        }
+        self.set_mode(Mode::Edit, window, cx);
+    }
+
     fn push_doc(
         &mut self,
         path: Option<PathBuf>,
@@ -451,22 +587,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The tab the window opens with is simply there; later ones grow in.
-        let born = (!self.docs.is_empty()).then(Instant::now);
         let ix = self.docs.len();
-        self.insert_doc(ix, path, name, text, born, window, cx);
+        self.insert_doc(ix, path, name, text, window, cx);
         self.activate(ix, window, cx);
     }
 
-    /// Add a document as tab number `at`, without bringing it on show.
-    #[allow(clippy::too_many_arguments)]
+    /// Add a document at place `at`, without bringing it on show.
     fn insert_doc(
         &mut self,
         at: usize,
         path: Option<PathBuf>,
         name: SharedString,
         text: String,
-        born: Option<Instant>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -490,12 +622,6 @@ impl Workspace {
         if let (Some(watcher), Some(path)) = (&mut self.watcher, &path) {
             watcher.include(path);
         }
-        let tab_width = titlebar::tab_width(ui::text_width(
-            &name,
-            size::FONT_UI,
-            FontWeight::MEDIUM,
-            window,
-        ));
         let doc = Doc {
             id,
             path,
@@ -516,79 +642,75 @@ impl Workspace {
                 self.started.elapsed().as_nanos() ^ std::process::id() as u128
             ),
             _backup: Task::ready(()),
-            tab_width,
-            born,
             _changes: changes,
             _blocks: Task::ready(()),
         };
         let at = at.min(self.docs.len());
         self.docs.insert(at, doc);
-        // Tabs after the new one moved along by one.
+        // Documents after the new one moved along by one.
         if self.docs.len() > 1 && self.active >= at {
             self.active += 1;
         }
         self.map_blocks(at, Duration::ZERO, cx);
     }
 
-    /// Bring back the other tabs of the last session, around the one already
+    /// Bring back the other files of the last session, behind the one already
     /// open. Called after the first frame, so they do not hold up launch.
-    fn restore_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((tabs, shown)) = self.restore.take() else {
-            return;
-        };
-        for (ix, path) in tabs.iter().enumerate() {
-            if ix == shown
-                || self
-                    .docs
-                    .iter()
-                    .any(|doc| doc.path.as_deref() == Some(path.as_path()))
+    fn restore_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for path in std::mem::take(&mut self.restore) {
+            if self
+                .docs
+                .iter()
+                .any(|doc| doc.path.as_deref() == Some(path.as_path()))
             {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(path) else {
+            let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };
             let name = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            // Tabs saved before the shown one go before it, the rest after.
-            let at = if ix < shown {
-                self.active
-            } else {
-                self.docs.len()
-            };
             let text = String::from_utf8_lossy(&bytes).into_owned();
-            self.insert_doc(at, Some(path.clone()), name.into(), text, None, window, cx);
+            let at = self.docs.len();
+            self.insert_doc(at, Some(path), name.into(), text, window, cx);
         }
         cx.notify();
     }
 
     /// The state worth remembering for next time.
     fn session(&self, window: &Window) -> Session {
-        let bounds = match window.window_bounds() {
-            WindowBounds::Windowed(bounds)
-            | WindowBounds::Maximized(bounds)
-            | WindowBounds::Fullscreen(bounds) => bounds,
+        // While the window is on its way between its two shapes, its size is neither's.
+        let here = (!self.reshaping).then(|| bounds_of(window));
+        let (page, desk) = match self.mode {
+            Mode::Read => (here.or(self.page), self.desk),
+            Mode::Edit => (self.page, here.or(self.desk)),
         };
-        let tabs: Vec<PathBuf> = self
-            .docs
-            .iter()
-            .filter_map(|doc| doc.path.clone())
+        let files: Vec<PathBuf> = self
+            .singles()
+            .into_iter()
+            .filter_map(|ix| self.docs[ix].path.clone())
             .collect();
-        let shown = self.active_doc().and_then(|doc| doc.path.as_ref());
         Session {
-            window: Some([
-                bounds.origin.x.into(),
-                bounds.origin.y.into(),
-                bounds.size.width.into(),
-                bounds.size.height.into(),
-            ]),
-            root: self.tree.root.clone(),
-            active: shown
-                .and_then(|shown| tabs.iter().position(|tab| tab == shown))
-                .unwrap_or(0),
-            tabs,
+            page,
+            desk,
+            folders: self
+                .folders
+                .iter()
+                .map(|folder| {
+                    let mut open_dirs: Vec<PathBuf> = folder.open_dirs.iter().cloned().collect();
+                    open_dirs.sort();
+                    FolderState {
+                        path: folder.root.clone(),
+                        pinned: folder.pinned,
+                        open: folder.open,
+                        open_dirs,
+                    }
+                })
+                .collect(),
+            files,
+            active: self.active_doc().and_then(|doc| doc.path.clone()),
             view: match self.view {
                 ViewMode::Editor => "editor",
                 ViewMode::Split => "split",
@@ -597,15 +719,30 @@ impl Workspace {
             .into(),
             sidebar_open: self.sidebar_open,
             sidebar_width: self.sidebar_width.into(),
+            outline_open: self.outline_open,
             split: self.split,
             scroll_sync: self.sync_enabled,
+            panel_scroll: self.panel.scrolled(),
+            progress: self.reader.progress.clone(),
         }
     }
 
-    /// Write the session down if it changed. Checked every frame, which is
-    /// simpler and safer than remembering to at every place that changes it;
-    /// the write itself waits for things to settle and happens off the main thread.
+    /// Write the session down if it changed. Looked at as frames are drawn,
+    /// which is simpler and safer than remembering to at every place that
+    /// changes it, but no more than a few times a second; the write itself
+    /// waits for things to settle and happens off the main thread.
     fn remember_session(&mut self, window: &Window, cx: &mut Context<Self>) {
+        const EVERY: Duration = Duration::from_millis(300);
+        if self.session_checked.elapsed() < EVERY {
+            // Nothing may be drawn again for a long while: look once more, shortly.
+            self._session_check = cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(EVERY).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            });
+            return;
+        }
+        self.session_checked = Instant::now();
+        self._session_check = Task::ready(());
         let session = self.session(window);
         if self.saved_session.as_ref() == Some(&session) {
             return;
@@ -667,6 +804,7 @@ impl Workspace {
         }
         if self.active != ix && self.docs.len() > 1 {
             self.switches += 1;
+            self.last_shown = self.docs.get(self.active).map(|doc| doc.id);
         }
         self.active = ix;
         // Not drawn in our own title bar, but it names the window in Mission
@@ -681,23 +819,37 @@ impl Workspace {
                     .unwrap_or(Path::new("untitled"))
             )
         });
-        self.docs[ix]
-            .editor
-            .update(cx, |editor, cx| editor.focus(window, cx));
-        if let Some(path) = self.docs[ix].path.clone() {
-            self.tree.reveal(&path);
-        }
+        self.focus_document(window, cx);
+        self.reveal_active();
+        // A file was just chosen: the panel that floats over the page has done its job.
+        self.reader.panel_open = false;
+        self.reader.wake(cx);
         cx.notify();
     }
 
-    fn cycle_tab(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.docs.len() as isize;
-        if count > 1 {
-            self.activate(
-                (self.active as isize + step).rem_euclid(count) as usize,
-                window,
-                cx,
-            );
+    /// Open whatever is shut on the way to the document on show, and bring
+    /// its row into view in the side panel.
+    fn reveal_active(&mut self) {
+        let Some(path) = self.active_doc().and_then(|doc| doc.path.clone()) else {
+            return;
+        };
+        if let Some(folder) = self.folder_of(&path) {
+            self.folders[folder].reveal(&path);
+        }
+        self.panel.show(path);
+    }
+
+    /// Go back to the document that was on show before this one.
+    fn last_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.last_shown.and_then(|id| self.doc_ix(id)) {
+            self.activate(ix, window, cx);
+        }
+    }
+
+    /// Show the n-th of the files open on their own, counting from 0.
+    fn jump_to_single(&mut self, nth: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.singles().get(nth).copied() {
+            self.activate(ix, window, cx);
         }
     }
 
@@ -724,8 +876,8 @@ impl Workspace {
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
-            .or_else(|| self.tree.root.clone())
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .or_else(|| self.folders.first().map(|folder| folder.root.clone()))
+            .or_else(system::home)
             .unwrap_or_default();
         let chosen = cx.prompt_for_new_path(&folder, Some(&doc.name));
         cx.spawn_in(window, async move |this, cx| {
@@ -746,19 +898,16 @@ impl Workspace {
                     .unwrap_or_default()
                     .into();
                 doc.path = Some(path.clone());
-                doc.tab_width = titlebar::tab_width(ui::text_width(
-                    &doc.name,
-                    size::FONT_UI,
-                    FontWeight::MEDIUM,
-                    window,
-                ));
                 let saved = this.write_doc(ix, window, cx);
-                // The new file may belong in the sidebar.
-                match this.tree.root {
-                    Some(_) => this.tree.refresh(),
-                    None => this.set_root(path.parent().map(Path::to_path_buf), cx),
+                // The new file may belong to one of the folders in the side panel.
+                if let Some(folder) = this.folder_of(&path) {
+                    let root = this.folders[folder].root.clone();
+                    this.scan_folder(root, cx);
                 }
-                this.tree.reveal(&path);
+                if this.active == ix {
+                    window.set_window_title(&this.docs[ix].name);
+                    this.reveal_active();
+                }
                 saved
             })
             .unwrap_or(false)
@@ -796,7 +945,7 @@ impl Workspace {
         }
     }
 
-    /// Close a tab, first offering to save it if it has unsaved changes.
+    /// Close a document, first offering to save it if it has unsaved changes.
     fn request_close(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get(ix) else { return };
         let id = doc.id;
@@ -837,29 +986,27 @@ impl Workspace {
         let Some(ix) = self.doc_ix(id) else { return };
         let closed = self.docs.remove(ix);
         Self::drop_backup(&closed.backup_key);
-        // Ghosts are placed by where they were among the open tabs; keep that true.
-        for ghost in &mut self.ghost_tabs {
-            if ghost.at > ix {
-                ghost.at -= 1;
-            }
-        }
-        self.ghost_tabs.push(titlebar::GhostTab {
-            at: ix,
-            name: closed.name.clone(),
-            width: closed.tab_width,
-            closed: Instant::now(),
-        });
         self.switches += 1;
+        // The window stays: with nothing left to show, it shows a blank page to start from.
         if self.docs.is_empty() {
-            self.close_confirmed = true;
-            window.remove_window();
+            self.active = 0;
+            self.last_shown = None;
+            self.open_untitled(window, cx);
             return;
         }
-        let next = if ix < self.active {
+        // Back to the document that was on show before, if it is still open.
+        let before = self
+            .last_shown
+            .filter(|last| *last != id)
+            .and_then(|last| self.doc_ix(last));
+        let next = before.unwrap_or(if ix < self.active {
             self.active - 1
         } else {
             self.active.min(self.docs.len() - 1)
-        };
+        });
+        // Whatever was the active index now points elsewhere: the one to show is chosen afresh.
+        self.active = usize::MAX;
+        self.last_shown = None;
         self.activate(next, window, cx);
     }
 
@@ -938,9 +1085,10 @@ impl Workspace {
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .or_else(system::home)
             .unwrap_or_default();
         let suggested = Path::new(name.as_ref()).with_extension("html");
+        let accent = theme::accent(cx);
         let chosen = cx.prompt_for_new_path(&folder, suggested.to_str());
         cx.spawn_in(window, async move |_, cx| {
             let Ok(Ok(Some(path))) = chosen.await else {
@@ -949,7 +1097,7 @@ impl Workspace {
             // Diagrams are drawn during export, which can take a moment.
             let page = cx
                 .background_executor()
-                .spawn(async move { crate::export::html(&text, &name) })
+                .spawn(async move { crate::export::html(&text, &name, accent) })
                 .await;
             let written = std::fs::write(&path, page);
             cx.update(|window, cx| match written {
@@ -991,77 +1139,104 @@ impl Workspace {
         .detach();
     }
 
-    // ------------------------------------------------------------- sidebar
+    // ------------------------------------------------------------- folders
 
-    /// Point the file tree at a folder. The folder is read off the main thread.
-    fn set_root(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
-        self.tree = FileTree {
-            root: root.clone(),
-            rows: Vec::new(),
-        };
-        self.file_index.clear();
-        if let Some(watcher) = &mut self.watcher {
-            watcher.set_root(root.as_deref());
+    /// Add a folder to the side panel, or show it if it is already there.
+    /// The folder is read off the main thread.
+    fn add_folder(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        match self.folders.iter().position(|folder| folder.root == root) {
+            Some(ix) => self.folders[ix].open = true,
+            None => {
+                self.folders.push(Folder::new(root.clone()));
+                self.scan_folder(root.clone(), cx);
+            }
+        }
+        self.watch_folders();
+        self.panel.show(root);
+        // A folder was asked for: its files are what there is to look at now.
+        match self.mode {
+            Mode::Edit => self.sidebar_open = true,
+            Mode::Read => self.reader.panel_open = true,
         }
         cx.notify();
-        let Some(root) = root else { return };
-        let reveal = self.active_doc().and_then(|doc| doc.path.clone());
-        cx.spawn(async move |this, cx| {
-            let folder = root.clone();
-            let tree = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut tree = FileTree {
-                        rows: files::read_dir(&folder, 0),
-                        root: Some(folder),
-                    };
-                    if let Some(path) = reveal {
-                        tree.reveal(&path);
-                    }
-                    tree
-                })
-                .await;
-            // The files show as soon as they are read. Listing every file
-            // below them, for the palette, can take longer and comes after.
-            let shown = this.update(cx, |this, cx| {
-                // Unless another folder was chosen while this one was being read.
-                let current = this.tree.root == tree.root;
-                if current {
-                    this.tree = tree;
-                    this.place_draft();
-                    cx.notify();
-                }
-                current
-            });
-            if !shown.unwrap_or(false) {
-                return;
-            }
-            let folder = root.clone();
-            let index = cx
-                .background_executor()
-                .spawn(async move { palette::index_files(&folder, 5000) })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.tree.root.as_deref() == Some(root.as_path()) {
-                    this.file_index = index;
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
     }
 
-    fn on_tree_click(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(row) = self.tree.rows.get(ix) else {
-            return;
-        };
-        if row.is_dir {
-            self.toggle_folder(ix, cx);
-        } else {
-            let path = row.path.clone();
-            self.open_path(&path, window, cx);
+    /// Take a folder off the side panel. Its files stay where they are on disk.
+    fn remove_folder(&mut self, root: &Path, cx: &mut Context<Self>) {
+        self.folders.retain(|folder| folder.root != root);
+        self._scans.remove(root);
+        self.watch_folders();
+        cx.notify();
+    }
+
+    /// Pin a folder to the top of the panel, or let it go.
+    fn toggle_pin(&mut self, root: &Path, cx: &mut Context<Self>) {
+        if let Some(folder) = self.folders.iter_mut().find(|folder| folder.root == root) {
+            folder.pinned = !folder.pinned;
         }
+        cx.notify();
+    }
+
+    /// Read a folder's Markdown files again. A newer request replaces one still running.
+    fn scan_folder(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let task = cx.spawn({
+            let root = root.clone();
+            async move |this, cx| {
+                let walked = root.clone();
+                let found = cx
+                    .background_executor()
+                    .spawn(async move { files::scan(&walked, 5000) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    let Some(ix) = this.folders.iter().position(|folder| folder.root == root)
+                    else {
+                        return;
+                    };
+                    startup::trace(|| format!("read {root:?}: {} files", found.len()));
+                    this.folders[ix].set_files(found);
+                    // The file on show may be in a subfolder that is still shut.
+                    let shown = this.active_doc().and_then(|doc| doc.path.clone());
+                    if let Some(path) = shown.filter(|path| this.folder_of(path) == Some(ix)) {
+                        this.folders[ix].reveal(&path);
+                    }
+                    // Reading the folder again dropped the row a new name is being typed in.
+                    this.place_draft();
+                    cx.notify();
+                })
+                .ok();
+            }
+        });
+        self._scans.insert(root, task);
+    }
+
+    /// Read a folder again shortly. Several changes in a row cause one read.
+    fn scan_folder_soon(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let task = cx.spawn({
+            let root = root.clone();
+            async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                this.update(cx, |this, cx| this.scan_folder(root, cx)).ok();
+            }
+        });
+        self._scans.insert(root, task);
+    }
+
+    /// Tell the watcher which folders are in the panel now.
+    fn watch_folders(&mut self) {
+        if let Some(watcher) = &mut self.watcher {
+            let roots: Vec<PathBuf> = self.folders.iter().map(|f| f.root.clone()).collect();
+            watcher.set_roots(&roots);
+        }
+    }
+
+    /// Every Markdown file of every folder in the panel.
+    fn all_files(&self) -> Vec<PathBuf> {
+        self.folders
+            .iter()
+            .flat_map(|folder| folder.files.iter().cloned())
+            .collect()
     }
 
     // ------------------------------------------------------------- commands
@@ -1079,15 +1254,21 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Change the editor font or its size, and remember the choice.
+    /// Change the accent colour, the editor font or its size, and remember the choice.
     fn update_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
-        let mut settings = *cx.global::<Settings>();
+        let before = *cx.global::<Settings>();
+        let mut settings = before;
         change(&mut settings);
         settings.font_size = settings::clamp_size(settings.font_size);
-        if settings == *cx.global::<Settings>() {
+        if settings == before {
             return;
         }
-        theme::set_editor_font(&settings, cx);
+        if settings.accent != before.accent {
+            theme::set_accent(&settings, cx);
+        }
+        if (settings.font, settings.font_size) != (before.font, before.font_size) {
+            theme::set_editor_font(&settings, cx);
+        }
         cx.set_global(settings);
         cx.background_executor()
             .spawn(async move { settings.save() })
@@ -1095,9 +1276,80 @@ impl Workspace {
         cx.notify();
     }
 
-    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_open = !self.sidebar_open;
+    /// Show or hide the side panel. Beside the editor it takes its place in
+    /// the window; over a page it floats, and takes the keyboard while it is there.
+    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Edit => self.sidebar_open = !self.sidebar_open,
+            Mode::Read => {
+                self.reader.panel_open = !self.reader.panel_open;
+                match self.reader.panel_open {
+                    true => self.panel.focus(window, cx),
+                    false => self.focus_document(window, cx),
+                }
+            }
+        }
         cx.notify();
+    }
+
+    /// Whether the side panel is on show, in either mode.
+    fn panel_shown(&self) -> bool {
+        match self.mode {
+            Mode::Edit => self.sidebar_open,
+            Mode::Read => self.reader.panel_open,
+        }
+    }
+
+    /// Put the caret in the side panel's search field, opening the panel if it is shut.
+    fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Edit => self.sidebar_open = true,
+            Mode::Read => self.reader.panel_open = true,
+        }
+        self.panel.focus_search(window, cx);
+        cx.notify();
+    }
+
+    /// Switch between the page and the editor. The window takes the shape of
+    /// each, and the document stays where it was being read.
+    fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == mode {
+            return;
+        }
+        if !self.reshaping {
+            let here = bounds_of(window);
+            match self.mode {
+                Mode::Read => self.page = Some(here),
+                Mode::Edit => self.desk = Some(here),
+            }
+        }
+        // The page is the preview of the editor, so it is already in place when
+        // the editor shows one. The source has to be lined up with it; and the
+        // page with the source when the editor was showing the source alone.
+        let lead = match (mode, self.view) {
+            (Mode::Edit, _) => Some(Side::Preview),
+            (Mode::Read, ViewMode::Editor) => Some(Side::Editor),
+            (Mode::Read, _) => None,
+        };
+        if let (Some(lead), Some(doc)) = (lead, self.docs.get_mut(self.active)) {
+            doc.sync.follow(lead);
+            self.carry = 12;
+        }
+        self.mode = mode;
+        self.mode_switches += 1;
+        self.reader.panel_open = false;
+        self.reader.wake(cx);
+        self.reshape_window(window, cx);
+        self.focus_document(window, cx);
+        cx.notify();
+    }
+
+    fn toggle_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let other = match self.mode {
+            Mode::Read => Mode::Edit,
+            Mode::Edit => Mode::Read,
+        };
+        self.set_mode(other, window, cx);
     }
 
     fn toggle_scroll_sync(&mut self, cx: &mut Context<Self>) {
@@ -1133,11 +1385,14 @@ impl Workspace {
 
     /// One step of a `ZINMD_SCRIPT`, standing in for the user in scripted checks:
     /// `editor:<px>` and `preview:<px>` scroll a pane, `type:<text>` types at the
-    /// caret, `line:<n>` moves the caret, `view:editor|split|preview`, `sidebar`,
-    /// `sync`, `new`, `open:<path>`, `save` and `close` run those commands,
+    /// caret, `line:<n>` moves the caret, `mode:read|edit`, `view:editor|split|preview`,
+    /// `sidebar`, `outline`, `sync`, `new`, `open:<path>`, `save` and `close` run those commands,
     /// `link:<url>` follows a link, `check:<n>` clicks the n-th task checkbox,
-    /// `tree:<n>` clicks the n-th row of the file list, `palette` and `theme`
-    /// toggle those, `font:<name>` and `size:<n>` set the editor font.
+    /// `file:<name>` opens the file of that name from the side panel, `fold:<name>`
+    /// opens or shuts a folder, `pin:<name>` pins one, `filter:<text>` types in the
+    /// panel's search, `panelscroll:<px>` scrolls its list, `rail:<n>` points at the n-th mark of the page's rail,
+    /// `section:<n>` goes to the n-th heading, `palette` and `theme` toggle those,
+    /// `font:<name>` and `size:<n>` set the editor font.
     #[cfg(feature = "shot")]
     pub fn debug_step(&mut self, step: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.report_frames();
@@ -1181,6 +1436,14 @@ impl Workspace {
                 .detach();
             }
             "line" => self.jump_to_line(argument.parse().unwrap_or(0), window, cx),
+            "mode" => self.set_mode(
+                match argument {
+                    "edit" => Mode::Edit,
+                    _ => Mode::Read,
+                },
+                window,
+                cx,
+            ),
             "view" => self.set_view(
                 match argument {
                     "editor" => ViewMode::Editor,
@@ -1189,30 +1452,25 @@ impl Workspace {
                 },
                 cx,
             ),
-            "sidebar" => self.toggle_sidebar(cx),
+            "sidebar" => self.toggle_sidebar(window, cx),
+            "outline" => self.outline_open = !self.outline_open,
             "wait" => {}
             "sync" => self.toggle_scroll_sync(cx),
-            "new" => self.open_untitled(window, cx),
+            "new" => self.new_document(window, cx),
             "open" => self.open(PathBuf::from(argument), window, cx),
             "save" => self.save_doc(id, false, window, cx).detach(),
             "close" => self.request_close(self.active, window, cx),
+            "back" => self.last_file(window, cx),
             "palette" => match self.palette {
                 Some(_) => self.close_palette(window, cx),
                 None => self.open_palette(window, cx),
             },
             "find" => window.dispatch_action(Box::new(edit::Search), cx),
-            // File actions on a row of the file list: `context:<n>` picks the row
-            // as a right-click would, then `newfile`, `newfolder`, `rename`, `trash`
-            // act on it; `name:<text>` types a name, and `key:enter` confirms it.
-            "context" => {
-                let row = argument
-                    .parse()
-                    .ok()
-                    .and_then(|ix: usize| self.tree.rows.get(ix));
-                self.context_row = row.map(|row| row.path.clone());
-            }
+            // File actions on a row of the side panel: `context:<name>` picks the
+            // row as a right-click would, then `newfile`, `rename`, `trash` act on
+            // it; `name:<text>` types a name, and `key:enter` confirms it.
+            "context" => self.context_row = self.debug_path(argument),
             "newfile" => self.new_file_here(window, cx),
-            "newfolder" => self.new_folder_here(window, cx),
             "rename" => self.rename_here(window, cx),
             "trash" => self.trash_here(window, cx),
             "name" => self.debug_name(argument, window, cx),
@@ -1230,8 +1488,41 @@ impl Workspace {
                     .section(group.parse().unwrap_or(0));
                 self.run_palette_target(at, window, cx);
             }
-            "tree" => self.on_tree_click(argument.parse().unwrap_or(0), window, cx),
+            "file" => {
+                if let Some(path) = self.debug_path(argument) {
+                    self.open(path, window, cx);
+                }
+            }
+            "fold" => self.debug_fold(argument, cx),
+            "pin" => {
+                if let Some(root) = self.debug_folder(argument) {
+                    self.toggle_pin(&root, cx);
+                }
+            }
+            "unlist" => {
+                if let Some(root) = self.debug_folder(argument) {
+                    self.remove_folder(&root, cx);
+                }
+            }
+            "filter" => self.debug_filter(argument, window, cx),
+            "panelscroll" => self.debug_scroll(argument.parse().unwrap_or(0.)),
+            "hover" => self.debug_hover(argument, cx),
+            "peek" => {
+                let path = self.debug_path(argument);
+                self.peek_at(path, cx);
+            }
+            "rail" => self.reader.point_at(argument.parse().ok()),
+            "section" => self.go_to_section(argument.parse().unwrap_or(0), window, cx),
+            "menu" => self.reader.wake(cx),
             "theme" => theme::toggle(cx),
+            // `accent:Sky` picks a colour, `colours` lets the menu of colours down or up.
+            "accent" => {
+                let accent = theme::Accent::ALL
+                    .into_iter()
+                    .find(|accent| accent.label() == argument);
+                self.update_settings(|s| s.accent = accent.unwrap_or(s.accent), cx);
+            }
+            "colours" => self.colours_open = !self.colours_open,
             "font" => {
                 let font = EditorFont::ALL
                     .into_iter()
@@ -1244,9 +1535,8 @@ impl Workspace {
             ),
             "export" => {
                 let doc = &self.docs[self.active];
-                if let Err(error) =
-                    std::fs::write(argument, crate::export::html(&doc.text, &doc.name))
-                {
+                let page = crate::export::html(&doc.text, &doc.name, theme::accent(cx));
+                if let Err(error) = std::fs::write(argument, page) {
                     eprintln!("export failed: {error}");
                 }
             }
@@ -1267,6 +1557,46 @@ impl Workspace {
             other => eprintln!("unknown script step: {other}"),
         }
         cx.notify();
+    }
+
+    /// The file or folder a script step names: by the name the panel shows, or by its path.
+    #[cfg(feature = "shot")]
+    fn debug_path(&self, name: &str) -> Option<PathBuf> {
+        if name.contains('/') {
+            return Some(PathBuf::from(name));
+        }
+        let listed = self.folders.iter().flat_map(|folder| folder.files.iter());
+        let open = self.docs.iter().filter_map(|doc| doc.path.as_ref());
+        listed
+            .chain(open)
+            .find(|path| files::display_name(path) == name)
+            .cloned()
+    }
+
+    #[cfg(feature = "shot")]
+    fn debug_folder(&self, name: &str) -> Option<PathBuf> {
+        self.folders
+            .iter()
+            .find(|folder| folder.name.as_ref() == name)
+            .map(|folder| folder.root.clone())
+    }
+
+    /// Open or shut the folder, or subfolder, of this name.
+    #[cfg(feature = "shot")]
+    fn debug_fold(&mut self, name: &str, cx: &mut Context<Self>) {
+        if let Some(root) = self.debug_folder(name) {
+            return self.toggle_folder(&root, cx);
+        }
+        let dir = self.folders.iter().enumerate().find_map(|(ix, folder)| {
+            let row = folder
+                .rows
+                .iter()
+                .find(|row| row.is_dir && row.name.as_ref() == name)?;
+            Some((ix, row.path.clone()))
+        });
+        if let Some((ix, dir)) = dir {
+            self.toggle_dir(ix, &dir, cx);
+        }
     }
 
     // ---------------------------------------------------------------- panes
@@ -1291,9 +1621,10 @@ impl Workspace {
             install_menus(cx);
             this.update(cx, |this, cx| {
                 this.opened_ms = Some(ms);
-                this.restore_tabs(window, cx);
+                this.restore_files(window, cx);
                 this.restore_backups(window, cx);
                 this.start_watching(window, cx);
+                this.shape_window(window);
                 cx.notify();
             })
             .ok();
@@ -1310,7 +1641,213 @@ impl Render for Workspace {
         self.frames.push(Instant::now());
         self.sync_scroll(window, cx);
         let p = *cx.palette();
-        // The sidebar slides and the panes glide between views; both are just
+
+        let body = match self.mode {
+            Mode::Read => self.render_reader(window, cx),
+            Mode::Edit => self.render_desk(window, cx),
+        };
+        // A change of mode fades up, while the window takes its new shape.
+        let body = match self.mode_switches {
+            0 => body,
+            _ if cx.reduce_motion() => body,
+            switches => div()
+                .size_full()
+                .child(body)
+                .with_animation(
+                    ("mode-arrives", switches),
+                    Animation::new(motion::PANEL).with_easing(motion::ease),
+                    |body, progress| body.opacity(0.2 + 0.8 * progress),
+                )
+                .into_any_element(),
+        };
+        let palette = self.render_palette(window, cx);
+        let peek = self.render_peek(window, cx);
+
+        v_flex()
+            .id("workspace")
+            .relative()
+            .size_full()
+            .bg(p.surface_app)
+            .text_color(p.text_primary)
+            .text_size(size::FONT_UI)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &NewFile, window, cx| this.new_document(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenFile, window, cx| this.open_dialog(window, cx)))
+            .on_action(cx.listener(|this, _: &Save, window, cx| {
+                if let Some(id) = this.active_doc().map(|doc| doc.id) {
+                    this.save_doc(id, false, window, cx).detach();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
+                if let Some(id) = this.active_doc().map(|doc| doc.id) {
+                    this.save_doc(id, true, window, cx).detach();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CloseFile, window, cx| {
+                this.request_close(this.active, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &LastFile, window, cx| this.last_file(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleMode, window, cx| this.toggle_mode(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ViewEditor, _, cx| this.set_view(ViewMode::Editor, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ViewSplit, _, cx| this.set_view(ViewMode::Split, cx)))
+            .on_action(
+                cx.listener(|this, _: &ViewPreview, _, cx| this.set_view(ViewMode::Preview, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ToggleScrollSync, _, cx| this.toggle_scroll_sync(cx)))
+            .on_action(cx.listener(|_, _: &ToggleTheme, _, cx| theme::toggle(cx)))
+            .on_action(
+                cx.listener(|this, _: &FocusSearch, window, cx| this.focus_search(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenPalette, window, cx| match this.palette {
+                    Some(_) => this.close_palette(window, cx),
+                    None => this.open_palette(window, cx),
+                }),
+            )
+            .on_action(cx.listener(|this, _: &NewFileHere, window, cx| {
+                this.context_row = None;
+                this.new_file_here(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &RenameFile, window, cx| {
+                this.context_row = None;
+                this.rename_here(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &TrashFile, window, cx| this.trash_here(window, cx)))
+            .on_action(cx.listener(|this, _: &RevealFile, _, cx| {
+                this.context_row = None;
+                this.reveal_here(cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyFilePath, _, cx| {
+                this.context_row = None;
+                this.copy_path_here(cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyFileContent, _, cx| {
+                this.context_row = None;
+                this.copy_content_here(cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousSection, window, cx| {
+                this.step_section(-1, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &NextSection, window, cx| this.step_section(1, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FindInFolder, window, cx| this.open_search(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ExportHtml, window, cx| this.export_html(window, cx)))
+            .on_action(cx.listener(|this, _: &FontBigger, _, cx| {
+                this.update_settings(|s| s.font_size += 1., cx)
+            }))
+            .on_action(cx.listener(|this, _: &FontSmaller, _, cx| {
+                this.update_settings(|s| s.font_size -= 1., cx)
+            }))
+            .on_action(cx.listener(|this, _: &FontReset, _, cx| {
+                this.update_settings(|s| s.font_size = settings::DEFAULT_FONT_SIZE, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UseJetBrainsMono, _, cx| {
+                this.update_settings(|s| s.font = EditorFont::JetBrainsMono, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UseFiraCode, _, cx| {
+                this.update_settings(|s| s.font = EditorFont::FiraCode, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UseMenlo, _, cx| {
+                this.update_settings(|s| s.font = EditorFont::Menlo, cx)
+            }))
+            .on_action(cx.listener(|this, _: &Quit, window, cx| this.quit(window, cx)))
+            // Escape shuts the menu of colours before it means anything else:
+            // as the editor's own action when the editor has the keyboard, as
+            // a plain key otherwise.
+            .capture_action(cx.listener(|this, _: &edit::Escape, _, cx| {
+                if this.colours_open {
+                    this.colours_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if this.colours_open && event.keystroke.key == "escape" {
+                    this.colours_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            // The command key with 1 to 9 shows the files open on their own,
+            // the way it showed tabs.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let key = &event.keystroke;
+                let only_cmd = system::only_command(&key.modifiers);
+                let digit = key
+                    .key
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=9).contains(n));
+                if let (true, Some(digit)) = (only_cmd, digit) {
+                    this.jump_to_single(digit - 1, window, cx);
+                    return cx.stop_propagation();
+                }
+                // A page is read with the keyboard as much as with the wheel.
+                let reading = this.mode == Mode::Read && this.focus.is_focused(window);
+                let plain = !(key.modifiers.platform || key.modifiers.alt || key.modifiers.control);
+                if !(reading && plain) {
+                    return;
+                }
+                let screen = window.viewport_size().height * 0.85;
+                let step = px(72.);
+                match (key.key.as_str(), key.modifiers.shift) {
+                    ("down", _) | ("j", false) => this.scroll_page(step, cx),
+                    ("up", _) | ("k", false) => this.scroll_page(-step, cx),
+                    ("space", false) | ("pagedown", _) => this.scroll_page(screen, cx),
+                    ("space", true) | ("pageup", _) => this.scroll_page(-screen, cx),
+                    ("home", _) => this.move_page_to(
+                        ListOffset {
+                            item_ix: 0,
+                            offset_in_item: px(0.),
+                        },
+                        cx,
+                    ),
+                    _ => return,
+                }
+                cx.stop_propagation();
+            }))
+            .on_drop(cx.listener(|this, dropped: &ExternalPaths, window, cx| {
+                this.panel.dropping = None;
+                this.open_requested(dropped.paths().to_vec(), window, cx);
+            }))
+            .on_drag_move::<DragSidebar>(cx.listener(
+                |this, drag: &DragMoveEvent<DragSidebar>, _, cx| {
+                    this.sidebar_width = drag.event.position.x.clamp(px(200.), px(480.));
+                    cx.notify();
+                },
+            ))
+            .on_drag_move::<panes::DragSplit>(cx.listener(
+                |this, drag: &DragMoveEvent<panes::DragSplit>, window, cx| {
+                    let left = if this.sidebar_open {
+                        this.sidebar_width
+                    } else {
+                        px(0.)
+                    };
+                    let width = window.viewport_size().width - left;
+                    this.split = ((drag.event.position.x - left) / width).clamp(0.2, 0.8);
+                    cx.notify();
+                },
+            ))
+            .child(body)
+            .children(peek)
+            .children(palette)
+    }
+}
+
+impl Workspace {
+    /// The editor's window: the bar across the top, the side panel, the
+    /// source and the preview, and the status bar.
+    fn render_desk(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = *cx.palette();
+        // The side panel slides and the panes glide between views; both are just
         // widths on their way to a target.
         let sidebar_target = if self.sidebar_open {
             self.sidebar_width
@@ -1339,124 +1876,17 @@ impl Render for Workspace {
         let panes_width = window.viewport_size().width - sidebar_width;
 
         let titlebar = self.render_titlebar(window, cx);
-        // The sidebar is kept drawn even when shut, so opening it has nothing to build.
-        let sidebar = self.render_sidebar(window, cx);
+        // The panel is kept drawn even when shut, so opening it has nothing to build.
+        let sidebar = self.render_panel(false, window, cx);
         let panes_target = (window.viewport_size().width - sidebar_target, share_target);
         let panes = self.render_panes(panes_width, share, panes_target, cx);
         let statusbar = self.render_statusbar(cx);
-        let palette = self.render_palette(window, cx);
         let full_sidebar = self.sidebar_width;
         let sidebar_handle = (self.sidebar_open && sidebar_width == full_sidebar)
             .then(|| motion::resize_handle("sidebar-handle", sidebar_width, DragSidebar, &p));
 
         v_flex()
-            .id("workspace")
-            .relative()
             .size_full()
-            .bg(p.surface_app)
-            .text_color(p.text_primary)
-            .text_size(size::FONT_UI)
-            .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &NewFile, window, cx| this.open_untitled(window, cx)))
-            .on_action(cx.listener(|this, _: &OpenFile, window, cx| this.open_dialog(window, cx)))
-            .on_action(cx.listener(|this, _: &Save, window, cx| {
-                if let Some(id) = this.active_doc().map(|doc| doc.id) {
-                    this.save_doc(id, false, window, cx).detach();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
-                if let Some(id) = this.active_doc().map(|doc| doc.id) {
-                    this.save_doc(id, true, window, cx).detach();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
-                this.request_close(this.active, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(1, window, cx)))
-            .on_action(
-                cx.listener(|this, _: &PreviousTab, window, cx| this.cycle_tab(-1, window, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &ViewEditor, _, cx| this.set_view(ViewMode::Editor, cx)),
-            )
-            .on_action(cx.listener(|this, _: &ViewSplit, _, cx| this.set_view(ViewMode::Split, cx)))
-            .on_action(
-                cx.listener(|this, _: &ViewPreview, _, cx| this.set_view(ViewMode::Preview, cx)),
-            )
-            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
-            .on_action(cx.listener(|this, _: &ToggleScrollSync, _, cx| this.toggle_scroll_sync(cx)))
-            .on_action(cx.listener(|_, _: &ToggleTheme, _, cx| theme::toggle(cx)))
-            .on_action(
-                cx.listener(|this, _: &OpenPalette, window, cx| match this.palette {
-                    Some(_) => this.close_palette(window, cx),
-                    None => this.open_palette(window, cx),
-                }),
-            )
-            .on_action(cx.listener(|this, _: &NewFileHere, window, cx| {
-                this.context_row = None;
-                this.new_file_here(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NewFolderHere, window, cx| {
-                this.context_row = None;
-                this.new_folder_here(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &RenameFile, window, cx| {
-                this.context_row = None;
-                this.rename_here(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &TrashFile, window, cx| this.trash_here(window, cx)))
-            .on_action(cx.listener(|this, _: &RevealFile, _, cx| {
-                this.context_row = None;
-                this.reveal_here(cx)
-            }))
-            .on_action(cx.listener(|this, _: &CopyFilePath, _, cx| {
-                this.context_row = None;
-                this.copy_path_here(cx)
-            }))
-            .on_action(
-                cx.listener(|this, _: &FindInFolder, window, cx| this.open_search(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &ExportHtml, window, cx| this.export_html(window, cx)))
-            .on_action(cx.listener(|this, _: &FontBigger, _, cx| {
-                this.update_settings(|s| s.font_size += 1., cx)
-            }))
-            .on_action(cx.listener(|this, _: &FontSmaller, _, cx| {
-                this.update_settings(|s| s.font_size -= 1., cx)
-            }))
-            .on_action(cx.listener(|this, _: &FontReset, _, cx| {
-                this.update_settings(|s| s.font_size = settings::DEFAULT_FONT_SIZE, cx)
-            }))
-            .on_action(cx.listener(|this, _: &UseJetBrainsMono, _, cx| {
-                this.update_settings(|s| s.font = EditorFont::JetBrainsMono, cx)
-            }))
-            .on_action(cx.listener(|this, _: &UseFiraCode, _, cx| {
-                this.update_settings(|s| s.font = EditorFont::FiraCode, cx)
-            }))
-            .on_action(cx.listener(|this, _: &UseMenlo, _, cx| {
-                this.update_settings(|s| s.font = EditorFont::Menlo, cx)
-            }))
-            .on_action(cx.listener(|this, _: &Quit, window, cx| this.quit(window, cx)))
-            .on_drop(cx.listener(|this, dropped: &ExternalPaths, window, cx| {
-                this.open_requested(dropped.paths().to_vec(), window, cx);
-            }))
-            .on_drag_move::<DragSidebar>(cx.listener(
-                |this, drag: &DragMoveEvent<DragSidebar>, _, cx| {
-                    this.sidebar_width = drag.event.position.x.clamp(px(180.), px(480.));
-                    cx.notify();
-                },
-            ))
-            .on_drag_move::<panes::DragSplit>(cx.listener(
-                |this, drag: &DragMoveEvent<panes::DragSplit>, window, cx| {
-                    let left = if this.sidebar_open {
-                        this.sidebar_width
-                    } else {
-                        px(0.)
-                    };
-                    let width = window.viewport_size().width - left;
-                    this.split = ((drag.event.position.x - left) / width).clamp(0.2, 0.8);
-                    cx.notify();
-                },
-            ))
             .child(titlebar)
             .child(
                 div()
@@ -1465,7 +1895,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    // The sidebar keeps its full width and slides out to the left
+                    // The panel keeps its full width and slides out to the left
                     // from under a window that narrows, so its text never re-wraps.
                     .child(
                         div()
@@ -1510,6 +1940,6 @@ impl Render for Workspace {
                     .children(sidebar_handle),
             )
             .child(statusbar)
-            .children(palette)
+            .into_any_element()
     }
 }

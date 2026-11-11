@@ -11,9 +11,39 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static MARKS: Mutex<Vec<(&'static str, f64)>> = Mutex::new(Vec::new());
 static START: Mutex<Option<Instant>> = Mutex::new(None);
 
+/// With `ZINMD_TRACE` set, what the libraries under the app report is printed
+/// as well: which graphics card was chosen, and anything that went wrong on
+/// the way to a window. Otherwise it is all dropped, at no cost.
+struct Reports;
+
+impl log::Log for Reports {
+    fn enabled(&self, about: &log::Metadata) -> bool {
+        // Everything that went wrong, and what the window toolkit did; the
+        // rest have a great deal to say about very little.
+        about.level() <= log::Level::Warn
+            || (about.level() == log::Level::Info && about.target().starts_with("gpui"))
+    }
+
+    fn log(&self, report: &log::Record) {
+        if self.enabled(report.metadata()) {
+            eprintln!(
+                "zinmd: {} [{}] {}",
+                report.level().as_str().to_lowercase(),
+                report.target(),
+                report.args()
+            );
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 /// Call first thing in `main`.
 pub fn begin() -> Instant {
     let now = Instant::now();
+    if std::env::var_os("ZINMD_TRACE").is_some() && log::set_logger(&Reports).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
     if std::env::var_os("ZINMD_BENCH").is_some() {
         ENABLED.store(true, Ordering::Relaxed);
         *START.lock().unwrap() = Some(now);

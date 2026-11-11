@@ -97,7 +97,7 @@ impl Workspace {
                         .and_then(|path| std::fs::read_to_string(path).ok())
                         .unwrap_or_default();
                     let at = self.docs.len();
-                    self.insert_doc(at, path, name.to_string().into(), on_disk, None, window, cx);
+                    self.insert_doc(at, path, name.to_string().into(), on_disk, window, cx);
                     at
                 }
             };

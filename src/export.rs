@@ -5,10 +5,11 @@
 use markdown::mdast::Node;
 
 use crate::preview::{self, frontmatter};
-use crate::theme::Palette;
+use crate::theme::{Accent, Palette};
 
-/// Render `source` to a complete HTML page. `name` is the title to fall back on.
-pub fn html(source: &str, name: &str) -> String {
+/// Render `source` to a complete HTML page, in the accent colour the app is
+/// wearing. `name` is the title to fall back on.
+pub fn html(source: &str, name: &str, accent: Accent) -> String {
     let options = markdown::Options {
         parse: preview::parse_options(),
         compile: markdown::CompileOptions {
@@ -23,7 +24,7 @@ pub fn html(source: &str, name: &str) -> String {
     let mut meta = frontmatter::Meta::default();
     if let Ok(tree) = markdown::to_mdast(source, &options.parse) {
         let mut swaps = Vec::new();
-        collect_swaps(&tree, &mut swaps, &mut meta);
+        collect_swaps(&tree, accent, &mut swaps, &mut meta);
         swaps.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
         for (range, html) in swaps {
             if body.is_char_boundary(range.start) && body.is_char_boundary(range.end) {
@@ -60,13 +61,14 @@ pub fn html(source: &str, name: &str) -> String {
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{}</title>\n<style>\n{}</style>\n</head>\n<body>\n<main>\n{header}{content}</main>\n</body>\n</html>\n",
         escape(&title),
-        stylesheet(),
+        stylesheet(accent),
     )
 }
 
 /// Find the nodes to replace: math, diagrams and the front matter.
 fn collect_swaps(
     node: &Node,
+    accent: Accent,
     swaps: &mut Vec<(std::ops::Range<usize>, String)>,
     meta: &mut frontmatter::Meta,
 ) {
@@ -88,7 +90,7 @@ fn collect_swaps(
                 .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid")) =>
         {
             // Exports use the light palette: a page is read on white more often than not.
-            preview::mermaid::svg(&code.value, &Palette::light())
+            preview::mermaid::svg(&code.value, &Palette::light(accent))
                 .ok()
                 .map(|svg| {
                     // An HTML block in Markdown ends at the first blank line.
@@ -106,7 +108,7 @@ fn collect_swaps(
         (Some(range), Some(html)) => swaps.push((range, html)),
         _ => {
             for child in node.children().into_iter().flatten() {
-                collect_swaps(child, swaps, meta);
+                collect_swaps(child, accent, swaps, meta);
             }
         }
     }
@@ -146,7 +148,7 @@ fn escape(text: &str) -> String {
 }
 
 /// The page's look: the app's palette, light or dark as the reader's system is.
-fn stylesheet() -> String {
+fn stylesheet(accent: Accent) -> String {
     let variables = |p: &Palette| {
         let hex = |color: gpui_kit::Hsla| {
             let gpui_kit::Rgba { r, g, b, a } = color.into();
@@ -178,8 +180,8 @@ fn stylesheet() -> String {
     };
     format!(
         ":root{{{}}}\n@media (prefers-color-scheme: dark){{:root{{{}}}}}\n{}",
-        variables(&Palette::light()),
-        variables(&Palette::dark()),
+        variables(&Palette::light(accent)),
+        variables(&Palette::dark(accent)),
         include_str!("export.css"),
     )
 }
@@ -187,11 +189,12 @@ fn stylesheet() -> String {
 #[cfg(test)]
 mod tests {
     use super::html;
+    use crate::theme::Accent;
 
     #[test]
     fn exports_a_self_contained_page() {
         let source = "---\ntitle: Report\ntags: [a, b]\n---\n\nText with $x^2$ and **bold**.\n\n> [!TIP]\n> Be kind.\n\n$$\n\\frac{a}{b}\n$$\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n| a | b |\n| - | - |\n| 1 | 2 |\n";
-        let page = html(source, "report.md");
+        let page = html(source, "report.md", Accent::Mustard);
         assert!(page.starts_with("<!doctype html>"));
         assert!(page.contains("<title>Report</title>"));
         // No heading in the text, so the front matter title becomes one.
@@ -216,8 +219,25 @@ mod tests {
     }
 
     #[test]
+    fn wears_the_accent_in_use() {
+        let page = |accent| {
+            html(
+                "# Hello\n\n[a link](https://example.com)\n",
+                "hello.md",
+                accent,
+            )
+        };
+        assert_ne!(page(Accent::Mustard), page(Accent::Sky));
+        assert_eq!(page(Accent::Sky), page(Accent::Sky));
+    }
+
+    #[test]
     fn keeps_plain_documents_plain() {
-        let page = html("# Hello\n\nWorld & <friends>\n", "hello.md");
+        let page = html(
+            "# Hello\n\nWorld & <friends>\n",
+            "hello.md",
+            Accent::Mustard,
+        );
         assert!(page.contains("<h1>Hello</h1>"));
         assert!(page.contains("<title>hello</title>"));
         assert!(!page.contains("class=\"tags\""));

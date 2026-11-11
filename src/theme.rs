@@ -4,6 +4,10 @@
 //! same names, same values, one Light and one Dark set. Everything the app paints
 //! itself reads from it. `kit_config` projects the same palette onto the component
 //! kit, so its editor, scrollbars and popovers match without a second colour list.
+//!
+//! The palette is built around one accent colour, which the user picks out of
+//! five: the "Accent" collection of the design file. Each is a ramp of shades,
+//! and the palette takes the same shade of whichever ramp is in use.
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -15,17 +19,131 @@ use crate::settings::Settings;
 
 // ---------------------------------------------------------------- primitives
 
+/// One accent colour as a ramp of shades, light to dark. Every ramp steps
+/// through the same lightness, so a shade does the same job whichever the
+/// colour: 500 is a fill that dark text reads on, 800 is text on a light page.
+struct Ramp {
+    s50: u32,
+    s100: u32,
+    s200: u32,
+    s300: u32,
+    s400: u32,
+    s500: u32,
+    s600: u32,
+    s700: u32,
+    s800: u32,
+}
+
 // Mustard: the brand colour. 500 is the classic mustard.
-const MUSTARD_50: u32 = 0xFEFAEB;
-const MUSTARD_100: u32 = 0xFCF2CC;
-const MUSTARD_200: u32 = 0xF8E499;
-const MUSTARD_300: u32 = 0xF2D261;
-const MUSTARD_400: u32 = 0xEBC034;
-const MUSTARD_500: u32 = 0xE1AD01;
-const MUSTARD_600: u32 = 0xC29300;
-const MUSTARD_700: u32 = 0x9A7400;
-const MUSTARD_800: u32 = 0x735600;
+const MUSTARD: Ramp = Ramp {
+    s50: 0xFEFAEB,
+    s100: 0xFCF2CC,
+    s200: 0xF8E499,
+    s300: 0xF2D261,
+    s400: 0xEBC034,
+    s500: 0xE1AD01,
+    s600: 0xC29300,
+    s700: 0x9A7400,
+    s800: 0x735600,
+};
 const MUSTARD_950: u32 = 0x2E2300;
+
+// The other accents. Made in OKLCH on one lightness scale, a little darker
+// through the middle than mustard, since yellow is the lightest of colours.
+const TERRACOTTA: Ramp = Ramp {
+    s50: 0xFFF5F2,
+    s100: 0xFFE8E1,
+    s200: 0xFFD3C5,
+    s300: 0xFEB69E,
+    s400: 0xFF946D,
+    s500: 0xEE7F52,
+    s600: 0xCF6637,
+    s700: 0xA85025,
+    s800: 0x803C19,
+};
+const OLIVE: Ramp = Ramp {
+    s50: 0xF3FAEC,
+    s100: 0xE5F4D6,
+    s200: 0xD0E8B4,
+    s300: 0xB9D68D,
+    s400: 0xA3C26A,
+    s500: 0x92AF52,
+    s600: 0x7B9438,
+    s700: 0x637626,
+    s800: 0x4C591B,
+};
+const SKY: Ramp = Ramp {
+    s50: 0xF0F9FF,
+    s100: 0xDEF1FF,
+    s200: 0xBFE3FF,
+    s300: 0x96D2FE,
+    s400: 0x6ABEFB,
+    s500: 0x54AAEA,
+    s600: 0x3C8FCD,
+    s700: 0x2D73A7,
+    s800: 0x22567F,
+};
+const LAVENDER: Ramp = Ramp {
+    s50: 0xF9F5FF,
+    s100: 0xF2E9FF,
+    s200: 0xE7D5FE,
+    s300: 0xD9BAFE,
+    s400: 0xC89FF7,
+    s500: 0xB68BE5,
+    s600: 0x9B72C8,
+    s700: 0x7D5AA3,
+    s800: 0x5F447C,
+};
+
+/// The colour the app is accented with. Mustard is its own; the others are
+/// there for the choosing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Accent {
+    #[default]
+    Mustard,
+    Terracotta,
+    Olive,
+    Sky,
+    Lavender,
+}
+
+impl Accent {
+    pub const ALL: [Accent; 5] = [
+        Accent::Mustard,
+        Accent::Terracotta,
+        Accent::Olive,
+        Accent::Sky,
+        Accent::Lavender,
+    ];
+
+    /// The name shown to the user, and the one kept in the settings.
+    pub fn label(self) -> &'static str {
+        match self {
+            Accent::Mustard => "Mustard",
+            Accent::Terracotta => "Terracotta",
+            Accent::Olive => "Olive",
+            Accent::Sky => "Sky",
+            Accent::Lavender => "Lavender",
+        }
+    }
+
+    fn ramp(self) -> &'static Ramp {
+        match self {
+            Accent::Mustard => &MUSTARD,
+            Accent::Terracotta => &TERRACOTTA,
+            Accent::Olive => &OLIVE,
+            Accent::Sky => &SKY,
+            Accent::Lavender => &LAVENDER,
+        }
+    }
+
+    /// The colour itself, as shown where it is picked: the shade the app
+    /// fills with in that appearance.
+    pub fn swatch(self, dark: bool) -> Hsla {
+        let ramp = self.ramp();
+        c(if dark { ramp.s400 } else { ramp.s500 })
+    }
+}
 
 // Stone: warm neutrals that sit well next to mustard.
 const STONE_0: u32 = 0xFFFFFF;
@@ -74,7 +192,7 @@ fn a(hex: u32, opacity: f32) -> Hsla {
 // ------------------------------------------------------------------- palette
 
 macro_rules! palette {
-    ($($(#[$doc:meta])* $name:ident: $light:expr, $dark:expr;)*) => {
+    ($ramp:ident; $($(#[$doc:meta])* $name:ident: $light:expr, $dark:expr;)*) => {
         /// Every colour the app paints with, for one appearance.
         // The full token set from the design file; not every token is in use yet.
         #[allow(dead_code)]
@@ -84,11 +202,13 @@ macro_rules! palette {
         }
 
         impl Palette {
-            pub fn light() -> Self {
+            pub fn light(accent: Accent) -> Self {
+                let $ramp = accent.ramp();
                 Self { $($name: $light,)* }
             }
 
-            pub fn dark() -> Self {
+            pub fn dark(accent: Accent) -> Self {
+                let $ramp = accent.ramp();
                 Self { $($name: $dark,)* }
             }
 
@@ -101,6 +221,7 @@ macro_rules! palette {
 }
 
 palette! {
+    ramp;
     /// Window chrome: title bar, sidebar, status bar.
     surface_app: c(STONE_100), c(STONE_950);
     surface_editor: c(STONE_50), c(STONE_925);
@@ -110,7 +231,7 @@ palette! {
     /// Things set into a surface: code blocks, table headers.
     surface_sunken: c(STONE_100), c(STONE_950);
     surface_hover: c(STONE_200), c(STONE_850);
-    surface_selected: c(MUSTARD_100), a(MUSTARD_500, 0.18);
+    surface_selected: c(ramp.s100), a(ramp.s500, 0.18);
 
     border_subtle: c(STONE_200), c(STONE_850);
     border_strong: c(STONE_300), c(STONE_700);
@@ -124,14 +245,14 @@ palette! {
     text_disabled: c(STONE_400), c(STONE_600);
     text_on_accent: c(STONE_900), c(STONE_950);
 
-    accent: c(MUSTARD_500), c(MUSTARD_400);
-    accent_hover: c(MUSTARD_600), c(MUSTARD_300);
-    accent_soft: c(MUSTARD_50), a(MUSTARD_500, 0.12);
-    accent_muted: c(MUSTARD_200), a(MUSTARD_500, 0.30);
-    accent_text: c(MUSTARD_800), c(MUSTARD_300);
-    accent_border: c(MUSTARD_400), c(MUSTARD_700);
+    accent: c(ramp.s500), c(ramp.s400);
+    accent_hover: c(ramp.s600), c(ramp.s300);
+    accent_soft: c(ramp.s50), a(ramp.s500, 0.12);
+    accent_muted: c(ramp.s200), a(ramp.s500, 0.30);
+    accent_text: c(ramp.s800), c(ramp.s300);
+    accent_border: c(ramp.s400), c(ramp.s700);
 
-    syntax_heading: c(MUSTARD_800), c(MUSTARD_300);
+    syntax_heading: c(ramp.s800), c(ramp.s300);
     syntax_link: c(BLUE_600), c(BLUE_300);
     syntax_code: c(TERRACOTTA_600), c(TERRACOTTA_300);
     syntax_marker: c(PLUM_600), c(PLUM_300);
@@ -146,8 +267,9 @@ palette! {
     status_info_soft: c(BLUE_50), c(BLUE_950);
     status_success: c(OLIVE_600), c(OLIVE_300);
     status_success_soft: c(OLIVE_50), c(OLIVE_950);
-    status_warning: c(MUSTARD_700), c(MUSTARD_400);
-    status_warning_soft: c(MUSTARD_50), c(MUSTARD_950);
+    // A warning is yellow whatever the accent.
+    status_warning: c(MUSTARD.s700), c(MUSTARD.s400);
+    status_warning_soft: c(MUSTARD.s50), c(MUSTARD_950);
     status_danger: c(RED_600), c(RED_300);
     status_danger_soft: c(RED_50), c(RED_950);
 }
@@ -180,20 +302,22 @@ pub mod size {
 // ------------------------------------------------------------------- install
 
 struct Palettes {
+    /// The accent the two palettes are built around.
+    accent: Accent,
     light: Palette,
     dark: Palette,
-    /// What is on screen now: one of the two, or a blend while fading between them.
+    /// What is on screen now: one of the two, or a blend while fading to one of them.
     current: Palette,
     fade: Option<Fade>,
 }
 
-/// A switch of appearance in progress.
+/// A switch of appearance or of accent in progress.
 struct Fade {
     from: Palette,
     started: Instant,
 }
 
-/// How long switching between light and dark takes.
+/// How long switching between light and dark, or to another accent, takes.
 const FADE: Duration = Duration::from_millis(220);
 
 impl Global for Palettes {}
@@ -211,7 +335,7 @@ impl ActivePalette for App {
 
 /// A colour between two others, mixed channel by channel so it never takes a
 /// detour through other hues.
-fn blend(from: Hsla, to: Hsla, progress: f32) -> Hsla {
+pub fn blend(from: Hsla, to: Hsla, progress: f32) -> Hsla {
     let (from, to) = (Rgba::from(from), Rgba::from(to));
     let mix = |from: f32, to: f32| from + (to - from) * progress;
     Rgba {
@@ -237,18 +361,65 @@ const UI_FONT: Option<&str> = None;
 /// starts from our theme instead of loading its own first.
 pub fn install(settings: &Settings, cx: &mut App) {
     settings.font.load(cx);
-    let light = Palette::light();
-    let dark = Palette::dark();
+    let light = Palette::light(settings.accent);
+    let dark = Palette::dark(settings.accent);
     let mut theme = Theme::default();
     theme.light_theme = Rc::new(kit_config(&light, ThemeMode::Light, settings));
     theme.dark_theme = Rc::new(kit_config(&dark, ThemeMode::Dark, settings));
     cx.set_global(theme);
     cx.set_global(Palettes {
+        accent: settings.accent,
         light,
         dark,
         current: light,
         fade: None,
     });
+}
+
+/// The accent colour in use.
+pub fn accent(cx: &App) -> Accent {
+    cx.global::<Palettes>().accent
+}
+
+/// The palette the app is in, or is fading to. What is drawn once and kept,
+/// as a diagram's picture is, is drawn with this one: `palette()` may be
+/// partway between two.
+pub fn settled(cx: &App) -> Palette {
+    let palettes = cx.global::<Palettes>();
+    if cx.theme().is_dark() {
+        palettes.dark
+    } else {
+        palettes.light
+    }
+}
+
+/// Use another accent colour, in every open window, fading over to it.
+pub fn set_accent(settings: &Settings, cx: &mut App) {
+    let accent = settings.accent;
+    let fade = !cx.reduce_motion();
+    let mode = if cx.theme().is_dark() {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    };
+    let (light, dark) = (Palette::light(accent), Palette::dark(accent));
+    let palettes = cx.global_mut::<Palettes>();
+    palettes.accent = accent;
+    palettes.light = light;
+    palettes.dark = dark;
+    palettes.fade = fade.then(|| Fade {
+        from: palettes.current,
+        started: Instant::now(),
+    });
+    if !fade {
+        palettes.current = if mode.is_dark() { dark } else { light };
+    }
+    Theme::update(cx, |theme| {
+        theme.light_theme = Rc::new(kit_config(&light, ThemeMode::Light, settings));
+        theme.dark_theme = Rc::new(kit_config(&dark, ThemeMode::Dark, settings));
+    });
+    // Asking for the appearance again puts the theme just registered for it to use.
+    Theme::change(mode, None, cx);
 }
 
 /// Use another editor font or size, in every open window, at once.
@@ -308,7 +479,7 @@ pub fn set_mode(mode: ThemeMode, fade: bool, cx: &mut App) {
     Theme::change(mode, None, cx);
 }
 
-/// Move a fade between appearances one frame on. Call once per frame, before
+/// Move a fade to another appearance or accent one frame on. Call once per frame, before
 /// anything reads the palette.
 pub fn tick(window: &mut Window, cx: &mut App) {
     let dark = cx.theme().is_dark();
@@ -379,7 +550,7 @@ fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig 
             "muted.foreground": hex(p.text_secondary),
             // What the kit highlights the row under the pointer with, in menus and
             // lists. Those sit on raised surfaces, where our plain hover colour
-            // is invisible in the dark appearance; the mustard tint shows on both.
+            // is invisible in the dark appearance; the accent's tint shows on both.
             "accent.background": hex(p.surface_selected),
             "accent.foreground": hex(p.text_primary),
             "primary.background": hex(p.accent),
@@ -393,9 +564,11 @@ fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig 
 
             "popover.background": hex(p.surface_raised),
             "popover.foreground": hex(p.text_primary),
-            "link.foreground": hex(p.accent_text),
-            "link.hover.foreground": hex(p.accent_text),
-            "link.active.foreground": hex(p.accent_text),
+            // Links are text: they take the accent's text shade, which reads
+            // on the page, not the fill, which is made to carry dark text.
+            "link": hex(p.accent_text),
+            "link.hover": hex(p.accent_text),
+            "link.active": hex(p.accent_text),
 
             "list.background": hex(p.surface_raised),
             "list.hover.background": hex(p.surface_hover),
@@ -500,4 +673,79 @@ fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig 
         },
     });
     serde_json::from_value(config).expect("the built-in theme is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Accent, Palette};
+    use gpui_kit::{Hsla, Rgba};
+
+    /// How strongly two colours contrast, as WCAG measures it: 1 to 21.
+    fn contrast(a: Hsla, b: Hsla) -> f32 {
+        let luminance = |color: Hsla| {
+            let Rgba { r, g, b, .. } = color.into();
+            let linear = |v: f32| {
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// Whatever the accent, in light and in dark: the words on a filled
+    /// button read, and so do links and headings on every surface they sit on.
+    #[test]
+    fn text_reads_on_every_accent() {
+        for accent in Accent::ALL {
+            for (look, p) in [
+                ("light", Palette::light(accent)),
+                ("dark", Palette::dark(accent)),
+            ] {
+                let name = format!("{} in {look}", accent.label());
+                assert!(
+                    contrast(p.text_on_accent, p.accent) >= 4.5,
+                    "{name}: on a button"
+                );
+                assert!(
+                    contrast(p.text_on_accent, p.accent_hover) >= 4.5,
+                    "{name}: on a hovered button"
+                );
+                for surface in [p.surface_preview, p.surface_editor, p.surface_app] {
+                    assert!(
+                        contrast(p.accent_text, surface) >= 4.5,
+                        "{name}: accent text"
+                    );
+                    assert!(
+                        contrast(p.syntax_heading, surface) >= 4.5,
+                        "{name}: a heading"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_accent_is_its_own() {
+        for (ix, accent) in Accent::ALL.into_iter().enumerate() {
+            for other in &Accent::ALL[ix + 1..] {
+                assert_ne!(accent.label(), other.label());
+                assert_ne!(accent.swatch(false), other.swatch(false));
+                assert_ne!(accent.swatch(true), other.swatch(true));
+            }
+            // The circle shows the very colour the app fills with.
+            assert_eq!(accent.swatch(false), Palette::light(accent).accent);
+            assert_eq!(accent.swatch(true), Palette::dark(accent).accent);
+        }
+        // Mustard is where the app starts, and a warning stays yellow under any accent.
+        assert_eq!(Accent::default(), Accent::Mustard);
+        assert_eq!(
+            Palette::light(Accent::Sky).status_warning,
+            Palette::light(Accent::Mustard).status_warning
+        );
+    }
 }
