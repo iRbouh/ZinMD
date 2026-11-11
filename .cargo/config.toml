@@ -1,0 +1,4 @@
+# On Windows the C runtime is built into the program, so it runs on a machine
+# that has never had the Visual C++ runtime installed.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

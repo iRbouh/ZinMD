@@ -1,0 +1,5 @@
+# The compiler every build uses, here and in the release pipeline, so a new
+# compiler never changes what ships without us choosing it.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=ZinMD
+GenericName=Markdown Editor
+Comment=Read and edit Markdown
+Exec=zinmd %F
+Icon=app.zinmd.ZinMD
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=markdown;md;notes;editor;reader;preview;
+MimeType=text/markdown;text/x-markdown;
+StartupNotify=true
+StartupWMClass=app.zinmd.ZinMD

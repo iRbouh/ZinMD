@@ -3,8 +3,11 @@
 # changes; the results are kept in the repository. Uses tools that ship with
 # macOS (swift needs the Xcode command line tools).
 #
-#   assets/ZinMD.icns            the app's icon
+#   assets/ZinMD.icns            the app's icon, for macOS
 #   assets/ZinMD-document.icns   the icon Markdown files wear in Finder
+#   assets/ZinMD.ico             the app's icon, for Windows
+#   assets/ZinMD-document.ico    the icon Markdown files wear in Explorer
+#   packaging/linux/icons/       the app's icon at the sizes Linux desktops ask for
 #   design/logo/png/              PNG copies, for the README and the web
 set -eu
 cd "$(dirname "$0")/.."
@@ -34,6 +37,28 @@ icns() {
 
 icns app-icon ZinMD
 icns file-icon ZinMD-document
+
+# An .ico holds the same picture at the sizes Windows asks for.
+ico() {
+    pictures=""
+    for size in 16 24 32 48 64 256; do
+        sips -z "$size" "$size" "$work/$1.png" --out "$work/$1-$size.png" >/dev/null
+        pictures="$pictures $work/$1-$size.png"
+    done
+    # shellcheck disable=SC2086
+    python3 scripts/ico.py "assets/$2.ico" $pictures
+    echo "built assets/$2.ico"
+}
+
+ico app-icon ZinMD
+ico file-icon ZinMD-document
+
+# Linux keeps one PNG for each size, in folders named after the size.
+mkdir -p packaging/linux/icons
+for size in 48 64 128 256 512; do
+    sips -z "$size" "$size" "$work/app-icon.png" --out "packaging/linux/icons/$size.png" >/dev/null
+done
+echo "built packaging/linux/icons"
 
 mkdir -p design/logo/png
 for name in app-icon file-icon; do
