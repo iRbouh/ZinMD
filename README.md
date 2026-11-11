@@ -46,6 +46,10 @@ A file opens as a page to read, in a window the shape of a sheet of paper.
 - Footnotes: `[^why]` is a small raised number that leads to its note, and
   says it when the pointer rests on it
 - Wide tables keep their words whole and scroll sideways
+- While you look for words on a page, the rail shows which sections they
+  are in
+- The top of the page says which heading you are under, and a hair of a
+  line along its edge how far you have read
 - Back and forward, as in a browser: follow a link, a heading or a search
   result, and one key takes you back to where you were
 - The files before and after the one you read, as two quiet links at the

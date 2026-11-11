@@ -41,6 +41,9 @@ pub(super) struct Find {
     at: usize,
     /// The words that were last looked for.
     sought: SharedString,
+    /// How many of the places are under each heading of the document, for
+    /// the rail to show where they are.
+    under: Vec<usize>,
     _events: Subscription,
 }
 
@@ -84,6 +87,7 @@ impl Workspace {
                 answer: Answer::Exact,
                 at: 0,
                 sought: "".into(),
+                under: Vec::new(),
                 _events: events,
             });
         }
@@ -144,6 +148,19 @@ impl Workspace {
             cx,
         );
         true
+    }
+
+    /// How many places the words were found in under each heading of the
+    /// document, and the heading the place being shown is under: what the
+    /// rail marks. `None` when no words are being looked for.
+    pub(super) fn found_under(&self) -> Option<(&[usize], Option<usize>)> {
+        let find = self.find.as_ref().filter(|_| self.find_open)?;
+        let mut before = 0;
+        let shown = find.under.iter().position(|count| {
+            before += count;
+            find.at < before
+        });
+        Some((&find.under, shown.filter(|_| !find.found.is_empty())))
     }
 
     /// The words being looked for on the page, if any are.
@@ -210,7 +227,10 @@ impl Workspace {
         reveal: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(preview) = self.active_doc().map(|doc| doc.preview.clone()) else {
+        let Some((preview, headings)) = self.active_doc().map(|doc| {
+            let lines: Vec<u32> = doc.headings.iter().map(|heading| heading.line).collect();
+            (doc.preview.clone(), lines)
+        }) else {
             return;
         };
         let p = *cx.palette();
@@ -221,6 +241,7 @@ impl Workspace {
             matching::search(&Folded::new(text.as_str()), &Wanted::new(&words));
         find.sought = words;
         find.at = choose(&find.found).min(find.found.len().saturating_sub(1));
+        find.under = under_headings(&text, &headings, &find.found);
 
         // Every place is tinted; the one being shown is tinted strongly.
         let marks = find.found.iter().enumerate().map(|(ix, place)| {
@@ -338,4 +359,43 @@ impl Workspace {
                 .child(card),
         )
     }
+}
+
+/// How many of `found`, places in the text of a page, are under each of its
+/// headings, given the lines of the source the headings are on. What comes
+/// before the first heading counts with it.
+fn under_headings(
+    text: &gpui_kit::base::text::RenderedText,
+    headings: &[u32],
+    found: &[Range<usize>],
+) -> Vec<usize> {
+    let mut under = vec![0; headings.len()];
+    if headings.is_empty() || found.is_empty() {
+        return under;
+    }
+    // Where each line of the source begins.
+    let source = text.source();
+    let mut lines = vec![0];
+    lines.extend(source.match_indices('\n').map(|(at, _)| at + 1));
+    // Where each heading begins on the page. One the page does not show is
+    // taken to be where the one before it is.
+    let mut last = 0;
+    let begins: Vec<usize> = headings
+        .iter()
+        .map(|line| {
+            let from = lines.get(*line as usize).copied().unwrap_or(source.len());
+            let to = lines
+                .get(*line as usize + 1)
+                .map_or(source.len(), |next| next - 1);
+            if let Some(shown) = text.range_for_source(from..to.max(from)) {
+                last = shown.start.max(last);
+            }
+            last
+        })
+        .collect();
+    for place in found {
+        let heading = begins.partition_point(|begin| *begin <= place.start);
+        under[heading.saturating_sub(1)] += 1;
+    }
+    under
 }

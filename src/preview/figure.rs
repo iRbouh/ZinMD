@@ -92,6 +92,15 @@ impl MarkdownPlugin for Figure {
         };
         let body = window.text_style().font_size.to_pixels(window.rem_size());
         let dark = cx.theme().is_dark();
+        // How wide and how tall the picture is, once it has been read.
+        let natural = match &source {
+            ImageSource::Resource(resource) => window
+                .use_asset::<ImageAssetLoader>(resource, cx)
+                .and_then(Result::ok)
+                .map(|read| read.size(0))
+                .filter(|size| size.width.0 > 0 && size.height.0 > 0),
+            _ => None,
+        };
 
         let (open, expand, copy) = (subject.clone(), subject.clone(), subject);
         let tools = h_flex()
@@ -136,16 +145,34 @@ impl MarkdownPlugin for Figure {
                     .relative()
                     .max_w_full()
                     .cursor_pointer()
-                    .child(
-                        img(source)
-                            .max_w(relative(1.))
+                    .map(|figure| {
+                        let picture = img(source)
                             .object_fit(ObjectFit::Contain)
                             .rounded(size::RADIUS_MD)
                             // A faint edge, so a picture with a white ground
                             // does not melt into a white page.
                             .border_1()
-                            .border_color(p.border_subtle.opacity(if dark { 0.6 } else { 1. })),
-                    )
+                            .border_color(p.border_subtle.opacity(if dark { 0.6 } else { 1. }));
+                        match natural {
+                            // Two boxes, as for a diagram: the outer as wide
+                            // as the picture, or as the column when that is
+                            // narrower, the inner taking the picture's shape
+                            // at that width. (Without them a picture wider
+                            // than the column kept its full height, and left
+                            // a blank between itself and its caption.)
+                            Some(natural) => {
+                                let (wide, tall) =
+                                    (natural.width.0 as f32, natural.height.0 as f32);
+                                figure.w_full().max_w(px(wide)).child(
+                                    div()
+                                        .w_full()
+                                        .aspect_ratio(wide / tall)
+                                        .child(picture.size_full()),
+                                )
+                            }
+                            None => figure.child(picture.max_w(relative(1.))),
+                        }
+                    })
                     .child(tools)
                     // Spreading two fingers on it opens it too, and the
                     // same spread then goes on to zoom it.

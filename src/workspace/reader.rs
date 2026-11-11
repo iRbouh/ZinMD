@@ -235,6 +235,41 @@ impl Workspace {
             .or(Some(0))
     }
 
+    /// The heading being read on a page that has been scrolled: what the
+    /// bar at the top says after the name of the file. At the top of a page
+    /// its own title says it.
+    pub(super) fn section_being_read(&self, cx: &App) -> Option<SharedString> {
+        let doc = self.active_doc()?;
+        let top = doc.preview.read(cx).list_state().logical_scroll_top();
+        if top.item_ix == 0 && top.offset_in_item <= px(0.) {
+            return None;
+        }
+        let heading = doc.headings.get(self.current_section(cx)?)?;
+        Some(heading.title.clone())
+    }
+
+    /// How far down the page the reader is, from 0 to 1: `None` at its top,
+    /// and for a page that is all on show.
+    fn page_progress(&self, cx: &App) -> Option<f32> {
+        let doc = self.active_doc().filter(|doc| !doc.blank())?;
+        let list = doc.preview.read(cx).list_state().clone();
+        let (count, top) = (list.item_count(), list.logical_scroll_top());
+        if count == 0 || (top.item_ix == 0 && top.offset_in_item <= px(0.)) {
+            return None;
+        }
+        if list.is_scrolled_to_end() == Some(true) {
+            return Some(1.);
+        }
+        // By blocks, and by how much of the block at the top has gone by.
+        let through = list
+            .bounds_for_item(top.item_ix)
+            .filter(|block| block.size.height > px(0.))
+            .map_or(0., |block| {
+                (top.offset_in_item / block.size.height).clamp(0., 1.)
+            });
+        Some(((top.item_ix as f32 + through) / count as f32).min(0.99))
+    }
+
     /// Go to the n-th heading of the document.
     pub(super) fn go_to_section(
         &mut self,
@@ -575,6 +610,23 @@ impl Workspace {
             });
 
         let rail = (!blank).then(|| self.render_rail(viewport, &p, window, cx));
+        // A hair of a line along the top edge: how much of the page is read.
+        let far = transition(
+            "page-progress",
+            self.page_progress(cx).unwrap_or(0.),
+            motion::glide(motion::QUICK, cx),
+            window,
+            cx,
+        );
+        let progress = (far > 0.002).then(|| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .h(px(2.))
+                .w(relative(far))
+                .bg(p.accent.opacity(0.8))
+        });
         let side = ((viewport.width - super::frame::sheet_width(viewport)) / 2.).max(px(24.));
         let foot = self.render_page_foot(side, &p, window, cx);
         let menu = self.render_page_menu(window, cx);
@@ -638,6 +690,7 @@ impl Workspace {
             )
             .children(rail)
             .child(menu)
+            .children(progress)
             .children(panel)
             .into_any_element()
     }
@@ -810,6 +863,9 @@ impl Workspace {
             }
         }
         let doc = &self.docs[self.active];
+        // Where the words being looked for on the page are: a dot beside the
+        // mark of each heading they are under.
+        let found = self.found_under().filter(|(under, _)| under.len() == count);
 
         let mut marks = Vec::with_capacity(count);
         for (ix, heading) in doc.headings.iter().enumerate() {
@@ -850,6 +906,21 @@ impl Workspace {
                     .rounded(px(1.5))
                     .bg(color),
             );
+            if let Some((under, shown)) = found
+                && under[ix] > 0
+            {
+                // The one the place being shown is under stands out.
+                let strength = if shown == Some(ix) { 1. } else { 0.45 };
+                marks.push(
+                    div()
+                        .absolute()
+                        .right(px(5.))
+                        .top(top + pitch * ix as f32 - px(2.5))
+                        .size(px(5.))
+                        .rounded_full()
+                        .bg(p.accent.opacity(strength)),
+                );
+            }
         }
 
         let arrow =
