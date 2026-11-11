@@ -25,7 +25,7 @@ use crate::{doc, motion};
 pub(super) const PAGE_TOP: Pixels = px(62.);
 /// Clear space under the text of a page: a sheet has a margin at its foot
 /// too, and the text never runs into the edge of the window.
-pub(super) const PAGE_BOTTOM: Pixels = px(40.);
+pub(super) const PAGE_BOTTOM: Pixels = px(56.);
 /// How wide the side panel is when it floats over a page.
 pub(super) const PANEL_WIDTH: Pixels = px(284.);
 /// How long the menu stays once the pointer has stopped.
@@ -301,6 +301,7 @@ impl Workspace {
         let Some(doc) = self.active_doc().map(|doc| doc.id) else {
             return;
         };
+        self.leave_place(cx);
         match self.mode {
             Mode::Edit => self.jump_to_line(line, window, cx),
             Mode::Read => {
@@ -574,6 +575,8 @@ impl Workspace {
             });
 
         let rail = (!blank).then(|| self.render_rail(viewport, &p, window, cx));
+        let side = ((viewport.width - super::frame::sheet_width(viewport)) / 2.).max(px(24.));
+        let foot = self.render_page_foot(side, &p, window, cx);
         let menu = self.render_page_menu(window, cx);
         let panel = self.render_floating_panel(&p, window, cx);
 
@@ -595,6 +598,7 @@ impl Workspace {
                     .opacity(shown)
                     .child(page),
             )
+            .children(foot)
             // The top of the page is what the window is moved by.
             .child(
                 div()
@@ -910,6 +914,7 @@ impl Workspace {
             }))
             .on_click(cx.listener(|this, _, window, cx| {
                 if let Some(mark) = this.reader.mark {
+                    this.leave_place(cx);
                     this.go_to_section(mark, window, cx);
                 }
             }));

@@ -13,6 +13,7 @@ mod panel;
 mod panes;
 mod reader;
 mod statusbar;
+mod trail;
 mod updates;
 mod viewer;
 
@@ -78,6 +79,10 @@ actions!(
         CopyFileContent,
         PreviousSection,
         NextSection,
+        GoBack,
+        GoForward,
+        PreviousFile,
+        NextFile,
         FontBigger,
         FontSmaller,
         FontReset,
@@ -110,6 +115,18 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(command!("alt-c"), CopyFilePath, None),
         KeyBinding::new("alt-up", PreviousSection, None),
         KeyBinding::new("alt-down", NextSection, None),
+        // Back to where you were and on again, as in a browser. In the
+        // editor these keys keep what they mean there.
+        KeyBinding::new(command!("["), GoBack, None),
+        KeyBinding::new(command!("]"), GoForward, None),
+        KeyBinding::new("alt-left", GoBack, None),
+        KeyBinding::new("alt-right", GoForward, None),
+        // The file before and after this one in its folder: the keys that
+        // go from tab to tab elsewhere.
+        KeyBinding::new(command!("shift-["), PreviousFile, None),
+        KeyBinding::new(command!("shift-]"), NextFile, None),
+        KeyBinding::new(command!("{"), PreviousFile, None),
+        KeyBinding::new(command!("}"), NextFile, None),
         KeyBinding::new(command!("shift-f"), FindInFolder, None),
         KeyBinding::new(command!("shift-e"), ExportHtml, None),
         KeyBinding::new(command!("="), FontBigger, None),
@@ -177,6 +194,10 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Previous Section", PreviousSection),
             MenuItem::action("Next Section", NextSection),
             MenuItem::action("Go Back to the Last File", LastFile),
+            MenuItem::action("Back", GoBack),
+            MenuItem::action("Forward", GoForward),
+            MenuItem::action("Previous File in the Folder", PreviousFile),
+            MenuItem::action("Next File in the Folder", NextFile),
             MenuItem::action("Turn Scroll Sync On or Off", ToggleScrollSync),
             MenuItem::action("Switch Light and Dark", ToggleTheme),
             MenuItem::separator(),
@@ -269,6 +290,7 @@ pub struct Workspace {
     panel: panel::Panel,
     /// The page: its menu, its rail, how far each file has been read.
     reader: reader::Reader,
+    trail: trail::Trail,
     /// The document that was on show before this one, to go back to.
     last_shown: Option<usize>,
     /// Files of the last session still to bring back.
@@ -389,6 +411,7 @@ impl Workspace {
             _scans: HashMap::new(),
             panel,
             reader: reader::Reader::new(session.progress),
+            trail: Default::default(),
             last_shown: None,
             restore: Vec::new(),
             saved_session: None,
@@ -584,6 +607,7 @@ impl Workspace {
             self.add_folder(path, cx);
             return;
         }
+        self.leave_place(cx);
         // An untouched blank page was only a placeholder: the file takes its place.
         let placeholder = match self.docs.as_slice() {
             [only] if only.blank() => Some(only.id),
@@ -893,6 +917,7 @@ impl Workspace {
     /// Go back to the document that was on show before this one.
     fn last_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.last_shown.and_then(|id| self.doc_ix(id)) {
+            self.leave_place(cx);
             self.activate(ix, window, cx);
         }
     }
@@ -900,6 +925,7 @@ impl Workspace {
     /// Show the n-th of the files open on their own, counting from 0.
     fn jump_to_single(&mut self, nth: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.singles().get(nth).copied() {
+            self.leave_place(cx);
             self.activate(ix, window, cx);
         }
     }
@@ -1503,6 +1529,11 @@ impl Workspace {
                 .detach();
             }
             "line" => self.go_to_line(argument.parse().unwrap_or(0), window, cx),
+            // `go:back` and `go:forward` move along the trail of where the
+            // reader has been; `turn:next` and `turn:previous` open the file
+            // beside this one.
+            "go" => self.go_along(argument == "forward", window, cx),
+            "turn" => self.turn_to_file(argument != "previous", window, cx),
             "mode" => self.set_mode(
                 match argument {
                     "edit" => Mode::Edit,
@@ -1721,6 +1752,7 @@ impl Render for Workspace {
         #[cfg(feature = "shot")]
         self.frames.push(Instant::now());
         self.sync_scroll(window, cx);
+        self.trail.settle();
         self.arrive(window, cx);
         let p = *cx.palette();
 
@@ -1781,6 +1813,25 @@ impl Render for Workspace {
                 this.request_close(this.active, window, cx)
             }))
             .on_action(cx.listener(|this, _: &LastFile, window, cx| this.last_file(window, cx)))
+            .on_action(cx.listener(|this, _: &GoBack, window, cx| this.go_along(false, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &GoForward, window, cx| this.go_along(true, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &PreviousFile, window, cx| {
+                this.turn_to_file(false, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &NextFile, window, cx| this.turn_to_file(true, window, cx)),
+            )
+            // The buttons at the side of a mouse.
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| this.go_along(false, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| this.go_along(true, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ToggleMode, window, cx| this.toggle_mode(window, cx)))
             .on_action(
                 cx.listener(|this, _: &ViewEditor, _, cx| this.set_view(ViewMode::Editor, cx)),

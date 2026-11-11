@@ -39,6 +39,10 @@ A file opens as a page to read, in a window the shape of a sheet of paper.
   place with the words marked on the page
 - Search that forgives: accents and case do not count, words are found in
   any order, and a slip of the finger still finds the word you meant
+- Back and forward, as in a browser: follow a link, a heading or a search
+  result, and one key takes you back to where you were
+- The files before and after the one you read, as two quiet links at the
+  foot of the page
 - Export to one self-contained HTML file
 - Picks up changes made on disk, reopens where you left off, and keeps
   unsaved work safe if the app crashes
@@ -134,6 +138,8 @@ The files land in `dist/`.
 | `⌘\` | Show or hide the side panel |
 | `⌘1` to `⌘9` | Go to a file opened on its own |
 | `⌃Tab` | Back to the last file |
+| `⌘[` `⌘]` | Back to where you were, and forward again |
+| `⇧⌘[` `⇧⌘]` | The file before, and after, this one in its folder |
 | `⇧⌘C` `⌥⌘C` | Copy the file's content, its path |
 | `⌥⌘1` `⌥⌘2` `⌥⌘3` | Editor, split, preview |
 | `⌘P` | Command palette |

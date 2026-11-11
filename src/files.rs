@@ -219,6 +219,33 @@ fn only_step<'a>(dir: &Path, held: &[&'a PathBuf]) -> Option<&'a std::ffi::OsStr
     only
 }
 
+/// The Markdown files in the folder `file` is in, itself among them, in the
+/// order the panel lists a folder's own files. `known` is every file of the
+/// panel folder that holds it; without it the folder is read from disk.
+pub fn beside(file: &Path, known: Option<&[PathBuf]>) -> Vec<PathBuf> {
+    let Some(dir) = file.parent() else {
+        return Vec::new();
+    };
+    let mut beside: Vec<PathBuf> = match known {
+        Some(known) => known
+            .iter()
+            .filter(|other| other.parent() == Some(dir))
+            .cloned()
+            .collect(),
+        None => std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some(entry.ok()?.path()))
+            .filter(|path| is_markdown(path) && path.is_file())
+            .collect(),
+    };
+    beside.sort_by_cached_key(|file| {
+        file.file_name()
+            .map(|name| name.to_string_lossy().to_lowercase())
+    });
+    beside
+}
+
 /// A file's name as the panel shows it: without `.md`, which every file has.
 /// Any other extension is kept, since it tells the file apart.
 pub fn display_name(path: &Path) -> String {
@@ -325,6 +352,37 @@ mod tests {
                 format!("{}{}{way}{count}", "  ".repeat(row.depth), row.name)
             })
             .collect()
+    }
+
+    #[test]
+    fn the_files_beside_one_are_those_of_its_folder_by_name() {
+        let root = std::env::temp_dir().join(format!("zinmd-beside-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("deeper")).unwrap();
+        for file in ["b.md", "A.md", "c.markdown", "notes.txt", "deeper/d.md"] {
+            std::fs::write(root.join(file), "").unwrap();
+        }
+        let named = |files: Vec<PathBuf>| -> Vec<String> {
+            files
+                .iter()
+                .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
+                .collect()
+        };
+        // Read from disk: what is Markdown, whatever the case of its name.
+        assert_eq!(
+            named(beside(&root.join("b.md"), None)),
+            ["A.md", "b.md", "c.markdown"]
+        );
+        // From the files of a panel folder: only those in the same folder.
+        let known = scan(&root, 100);
+        assert_eq!(
+            named(beside(&root.join("b.md"), Some(&known))),
+            ["A.md", "b.md", "c.markdown"]
+        );
+        assert_eq!(
+            named(beside(&root.join("deeper/d.md"), Some(&known))),
+            ["d.md"]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

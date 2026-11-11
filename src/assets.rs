@@ -14,6 +14,8 @@ icon_assets!(
     [
         AArrowDown,
         AArrowUp,
+        ArrowLeft,
+        ArrowRight,
         BookOpen,
         Check,
         ChevronDown,

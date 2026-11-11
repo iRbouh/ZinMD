@@ -195,6 +195,46 @@ impl Workspace {
         )
     }
 
+    /// Back and forward along the trail of where the reader has been. They
+    /// are only there once there is somewhere to go.
+    fn trail_buttons(
+        &self,
+        p: &Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        if !self.can_go(false) && !self.can_go(true) {
+            return None;
+        }
+        let mut buttons = h_flex().flex_none();
+        for forward in [false, true] {
+            let (id, icon, says) = match forward {
+                true => (
+                    "go-forward",
+                    IconName::ArrowRight,
+                    concat!("Forward  ", shortcut!("]")),
+                ),
+                false => (
+                    "go-back",
+                    IconName::ArrowLeft,
+                    concat!("Back  ", shortcut!("[")),
+                ),
+            };
+            let button = match self.can_go(forward) {
+                true => self
+                    .menu_button(id, icon, p, window, cx)
+                    .tooltip(move |window, cx| Tooltip::new(says).build(window, cx))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.go_along(forward, window, cx)),
+                    ),
+                // Nowhere to go that way: it keeps its place, faintly.
+                false => icon_button(id, icon, p).opacity(0.3),
+            };
+            buttons = buttons.child(button);
+        }
+        Some(buttons)
+    }
+
     /// Shows and hides the side panel: the first thing on the left, in both modes.
     fn panel_button(
         &self,
@@ -508,6 +548,7 @@ impl Workspace {
             .h_full()
             .child(div().flex_none().w(lights))
             .child(self.panel_button(&p, window, cx))
+            .children(self.trail_buttons(&p, window, cx))
             .children(place.map(|place| place.ml(px(4.))));
         let export = match fit {
             Fit::Full => self.render_export_button(&p, window, cx).into_any_element(),
@@ -713,6 +754,10 @@ impl Workspace {
                     .flex_none()
                     .opacity(presence)
                     .child(self.panel_button(&p, window, cx)),
+            )
+            .children(
+                self.trail_buttons(&p, window, cx)
+                    .map(|buttons| buttons.opacity(presence)),
             )
             .children(place);
         let end = h_flex()
