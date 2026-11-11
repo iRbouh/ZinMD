@@ -2,10 +2,14 @@
 # three systems ZinMD ships for. A release never starts from broken code.
 name: CI
 
+# The website and the README's pictures are not code: a push that changes
+# nothing else has nothing to check here.
 on:
   push:
     branches: ["**"]
+    paths-ignore: ["site/**", "docs/**", "README.md"]
   pull_request:
+    paths-ignore: ["site/**", "docs/**", "README.md"]
 
 concurrency:
   group: ci-${{ github.ref }}
