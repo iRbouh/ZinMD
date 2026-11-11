@@ -31,13 +31,6 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// Give up the text, once the page has it: what is kept says where its
-    /// places are in the source.
-    pub fn without_text(mut self) -> Self {
-        self.text = String::new();
-        self
-    }
-
     /// Where a place in the shown text is in the source it was made from.
     /// It is exact outside the links that were swapped in.
     pub fn in_source(&self, at: usize) -> usize {

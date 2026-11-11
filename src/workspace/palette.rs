@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IndexPath, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -67,19 +68,15 @@ pub(super) struct CommandPalette {
     /// Whether this palette searches the text of the folder's files, rather
     /// than offering headings, files and commands.
     searching: bool,
+    /// The field the search is typed in. It is the app's own, drawn larger
+    /// than the one the list comes with: a search is words to read back,
+    /// not a name to pick.
+    field: Option<Entity<InputState>>,
+    _typed: Option<Subscription>,
     /// The words the rows on show were found for.
     sought: SharedString,
     /// What is said under the rows: how much was found.
     told: SharedString,
-}
-
-impl CommandPalette {
-    /// Put text in the palette's field as if it had been typed.
-    pub(super) fn type_query(&self, text: &str, window: &mut Window, cx: &mut App) {
-        let text = text.to_string();
-        self.state
-            .update(cx, |state, cx| state.set_query(text, window, cx));
-    }
 }
 
 impl Workspace {
@@ -196,10 +193,32 @@ impl Workspace {
             targets: Rc::new(targets),
             groups,
             searching: false,
+            field: None,
+            _typed: None,
             sought: "".into(),
             told: "".into(),
         });
         cx.notify();
+    }
+
+    /// Put text in the field of the palette as if it had been typed.
+    pub(super) fn type_in_palette(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(palette) = &self.palette else { return };
+        let text = text.to_string();
+        match palette.field.clone() {
+            Some(field) => {
+                field.update(cx, |field, cx| field.set_value(text.clone(), window, cx));
+                self.search_folder(text, cx);
+            }
+            None => palette
+                .state
+                .update(cx, |state, cx| state.set_query(text, window, cx)),
+        }
     }
 
     /// Open the palette to search the text of every file in the folder. Words
@@ -208,19 +227,27 @@ impl Workspace {
         let words = self.words_being_found(cx);
         self.close_find(window, cx);
         let state = cx.new(|cx| CommandState::new(window, cx));
-        state.update(cx, |state, cx| state.focus(window, cx));
-        let palette = CommandPalette {
+        let field = cx.new(|cx| InputState::new(window, cx).placeholder("Search in every file"));
+        field.update(cx, |field, cx| field.focus(window, cx));
+        let typed = cx.subscribe_in(&field, window, |this, field, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = field.read(cx).value().to_string();
+                this.search_folder(text, cx);
+            }
+        });
+        self.palette = Some(CommandPalette {
             state,
             targets: Rc::new(Vec::new()),
             groups: Vec::new(),
             searching: true,
+            field: Some(field),
+            _typed: Some(typed),
             sought: "".into(),
             told: "".into(),
-        };
+        });
         if let Some(words) = words {
-            palette.type_query(&words, window, cx);
+            self.type_in_palette(&words, window, cx);
         }
-        self.palette = Some(palette);
         cx.notify();
     }
 
@@ -418,23 +445,11 @@ impl Workspace {
         let (confirm, cancel, dismiss) = (cx.weak_entity(), cx.weak_entity(), cx.weak_entity());
 
         let searching = palette.searching;
-        let query = cx.weak_entity();
         let mut command = Command::new(&palette.state)
-            .placeholder(if searching {
-                "Search the text of every file in your folders"
-            } else {
-                "Search headings, files and commands"
-            })
-            // When searching, the rows are already the answer: do not filter them again.
-            .filterable(!searching)
-            .on_query(move |text, _, cx| {
-                if searching {
-                    let text = text.to_string();
-                    query
-                        .update(cx, |this, cx| this.search_folder(text, cx))
-                        .ok();
-                }
-            })
+            .placeholder("Search headings, files and commands")
+            // A search has a field of its own, and its rows are already the
+            // answer: the list neither shows a field nor filters them.
+            .searchable(!searching)
             // Rows that were found are given more room than commands are.
             .max_h(px(if searching { 480. } else { 420. }))
             .on_confirm(move |at, window, cx| {
@@ -464,6 +479,23 @@ impl Workspace {
                 false => CommandGroup::new().label(title.clone()),
             };
             command = command.group(group.items(items));
+        }
+        if let Some(field) = palette.field.clone() {
+            let typed = !field.read(cx).value().trim().is_empty();
+            command = command
+                .header(move |_, _, _| search_field(&field, p))
+                // Said in place of the rows when there are none.
+                .empty(move |_, _, _| {
+                    div()
+                        .px(px(14.))
+                        .py(px(18.))
+                        .text_size(size::FONT_UI)
+                        .text_color(p.text_tertiary)
+                        .child(match typed {
+                            true => "Nothing found.",
+                            false => "Type words to look for in every file of your folders.",
+                        })
+                });
         }
         if !palette.told.is_empty() {
             let told = palette.told.clone();
@@ -611,4 +643,30 @@ fn title_row(name: SharedString, way: SharedString, p: Palette) -> CommandItem {
                     .child(way.clone()),
             )
     })
+}
+
+/// The field of the search: taller than a row, with words large enough to
+/// read back at a glance.
+fn search_field(field: &Entity<InputState>, p: Palette) -> Div {
+    h_flex()
+        .flex_none()
+        .h(px(54.))
+        .px(px(18.))
+        .gap(px(12.))
+        .border_b_1()
+        .border_color(p.border_raised)
+        .child(
+            Icon::new(IconName::Search)
+                .size(px(18.))
+                .text_color(p.text_tertiary),
+        )
+        .child(
+            div().flex_1().min_w_0().child(
+                Input::new(field)
+                    .appearance(false)
+                    .bordered(false)
+                    .px_0()
+                    .text_size(px(17.)),
+            ),
+        )
 }

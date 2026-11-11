@@ -365,7 +365,15 @@ impl Workspace {
         let place = doc.and_then(|doc| {
             let (block, _) = doc.blocks.locate(arriving.line as f32)?;
             let start = doc.blocks.line_at(block, 0.)?;
-            let deep = arriving.line as f32 - start > DEEP;
+            // A row of a table is shown by showing the table: what was
+            // found may be in a column that is scrolled out of sight, which
+            // no moving of the page brings into view.
+            let in_table = doc
+                .text
+                .lines()
+                .nth(arriving.line as usize)
+                .is_some_and(|line| line.trim_start().starts_with('|'));
+            let deep = !in_table && arriving.line as f32 - start > DEEP;
             // A heading just above the block belongs with it: the page
             // starts there, and says what the block is about.
             let above = block.checked_sub(1).filter(|above| {

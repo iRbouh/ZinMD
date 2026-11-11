@@ -247,8 +247,11 @@ pub struct Doc {
     stats: Stats,
     /// Which source lines each preview row shows; rebuilt in the background after edits.
     blocks: BlockMap,
-    /// Where the places of the page's text are in the source, when the page
-    /// does not show the source as it is: its wiki links are made links.
+    /// What the page shows, when that is not the source as it is: its wiki
+    /// links are made links and its footnotes numbered. It says where its
+    /// places are in the source, and it is what the page's blocks are
+    /// counted in: two footnotes are two blocks of the source and one list
+    /// of the page.
     links: Option<crate::links::Shown>,
     sync: ScrollSync,
     /// What its file looked like when we last read or wrote it, to tell when
@@ -715,7 +718,7 @@ impl Workspace {
             saved: text.clone(),
             text,
             blocks: BlockMap::default(),
-            links: links.map(crate::links::Shown::without_text),
+            links,
             sync: ScrollSync::default(),
             disk,
             notice: None,
@@ -854,7 +857,7 @@ impl Workspace {
             Some(shown) => preview.set_text(&shown.text, cx),
             None => preview.set_text(&text, cx),
         });
-        doc.links = links.map(crate::links::Shown::without_text);
+        doc.links = links;
         doc.text = text;
         self.back_up(ix, cx);
         // Wait for a pause in typing: the map is only needed to scroll.
@@ -866,7 +869,12 @@ impl Workspace {
     /// replaces one that is still waiting.
     fn map_blocks(&mut self, ix: usize, delay: Duration, cx: &mut Context<Self>) {
         let doc = &mut self.docs[ix];
-        let (id, text) = (doc.id, doc.text.clone());
+        // The blocks are the page's: counted in what it shows.
+        let text: SharedString = match &doc.links {
+            Some(shown) => shown.text.clone().into(),
+            None => doc.text.clone(),
+        };
+        let id = doc.id;
         doc._blocks = cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
@@ -1384,7 +1392,8 @@ impl Workspace {
                     None => preview.set_text(&text, cx),
                 });
             }
-            doc.links = links.map(crate::links::Shown::without_text);
+            doc.links = links;
+            self.map_blocks(ix, Duration::ZERO, cx);
         }
     }
 
@@ -1657,11 +1666,7 @@ impl Workspace {
             "name" => self.debug_name(argument, window, cx),
             "search" => self.open_search(window, cx),
             // Type into the palette, whichever kind is open.
-            "query" => {
-                if let Some(palette) = &self.palette {
-                    palette.type_query(argument, window, cx);
-                }
-            }
+            "query" => self.type_in_palette(argument, window, cx),
             // Choose a row of the palette: `pick:<group>.<row>`.
             "pick" => {
                 let (group, row) = argument.split_once('.').unwrap_or((argument, "0"));
