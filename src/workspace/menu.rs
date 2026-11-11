@@ -446,17 +446,26 @@ impl Workspace {
     }
 
     /// The place written out, `folder / name`, with a dot while there are
-    /// unsaved changes, and after it the heading being read, when one is
-    /// given. Where its room ends it fades out into `backdrop`.
+    /// unsaved changes, and after it what is given of the reading: how much
+    /// of the page has been read, then the heading being read. Where its
+    /// room ends it fades out into `backdrop`, the heading first.
     fn render_place(
         &self,
         with_folder: bool,
-        section: Option<SharedString>,
+        reading: (Option<SharedString>, Option<SharedString>),
         name_color: Hsla,
         backdrop: Hsla,
         p: &Palette,
     ) -> Option<Div> {
         let (folder, name, dirty) = self.place()?;
+        let (read, section) = reading;
+        let read = read.map(|read| {
+            h_flex()
+                .flex_none()
+                .gap(px(6.))
+                .child(div().text_color(p.text_disabled).child("·"))
+                .child(div().text_color(p.text_secondary).child(read))
+        });
         let section = section.map(|section| {
             h_flex()
                 .flex_none()
@@ -483,6 +492,7 @@ impl Workspace {
                     .child(name),
             )
             .children(dirty.then(|| div().flex_none().size(px(6.)).rounded_full().bg(p.accent)))
+            .children(read)
             .children(section);
         Some(fading(words, backdrop))
     }
@@ -547,7 +557,13 @@ impl Workspace {
 
         let place = match fit {
             Fit::Tight => None,
-            _ => self.render_place(fit == Fit::Full, None, p.text_primary, p.surface_app, &p),
+            _ => self.render_place(
+                fit == Fit::Full,
+                (None, None),
+                p.text_primary,
+                p.surface_app,
+                &p,
+            ),
         };
         // The room the ends keep clear is put inside them as spacers, not as
         // padding: padding would be added to an end's share of the bar, and
@@ -751,8 +767,12 @@ impl Workspace {
         let name_color = theme::blend(p.text_tertiary, p.text_primary, presence);
         // Once the page has been scrolled, the name is followed by the
         // heading being read.
-        let section = self.section_being_read(cx);
-        let place = self.render_place(false, section, name_color, p.surface_preview, &p);
+        // And before it, by how much of the page has been read.
+        let read = self
+            .page_progress(cx)
+            .map(|far| SharedString::from(format!("{}%", (far * 100.).round() as u32)));
+        let reading = (read, self.section_being_read(cx));
+        let place = self.render_place(false, reading, name_color, p.surface_preview, &p);
         let start = h_flex()
             .id("page-menu-start")
             .flex_1()

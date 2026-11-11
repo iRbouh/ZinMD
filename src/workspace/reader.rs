@@ -248,26 +248,49 @@ impl Workspace {
         Some(heading.title.clone())
     }
 
-    /// How far down the page the reader is, from 0 to 1: `None` at its top,
-    /// and for a page that is all on show.
-    fn page_progress(&self, cx: &App) -> Option<f32> {
+    /// How much of the text of the page has been on show, from 0 to 1: all
+    /// that is above the foot of what is on show now. It is measured in
+    /// text, so half way is half the words, however the blocks are cut.
+    fn read_so_far(&self, cx: &App) -> Option<f32> {
         let doc = self.active_doc().filter(|doc| !doc.blank())?;
         let list = doc.preview.read(cx).list_state().clone();
-        let (count, top) = (list.item_count(), list.logical_scroll_top());
-        if count == 0 || (top.item_ix == 0 && top.offset_in_item <= px(0.)) {
+        let (count, view) = (list.item_count(), list.viewport_bounds());
+        if count == 0 || view.size.height <= px(0.) {
             return None;
         }
         if list.is_scrolled_to_end() == Some(true) {
             return Some(1.);
         }
-        // By blocks, and by how much of the block at the top has gone by.
-        let through = list
-            .bounds_for_item(top.item_ix)
-            .filter(|block| block.size.height > px(0.))
-            .map_or(0., |block| {
-                (top.offset_in_item / block.size.height).clamp(0., 1.)
-            });
-        Some(((top.item_ix as f32 + through) / count as f32).min(0.99))
+        // The last block on show, and how much of it is above the foot.
+        let top = list.logical_scroll_top();
+        let mut last = (top.item_ix, 0.);
+        for ix in top.item_ix..count {
+            let Some(block) = list.bounds_for_item(ix) else {
+                break;
+            };
+            if block.top() >= view.bottom() {
+                break;
+            }
+            let through = match block.size.height > px(0.) {
+                true => ((view.bottom() - block.top()) / block.size.height).clamp(0., 1.),
+                false => 1.,
+            };
+            last = (ix, through);
+        }
+        // Not quite all of it until the end is reached.
+        Some(doc.blocks.share_before(last.0, last.1)?.min(0.99))
+    }
+
+    /// How far the page has been read, for the line along its top and the
+    /// number in its bar: `None` at the top of a page, where nothing has
+    /// been read yet, and for a page that is all on show.
+    pub(super) fn page_progress(&self, cx: &App) -> Option<f32> {
+        let doc = self.active_doc()?;
+        let top = doc.preview.read(cx).list_state().logical_scroll_top();
+        if top.item_ix == 0 && top.offset_in_item <= px(0.) {
+            return None;
+        }
+        self.read_so_far(cx)
     }
 
     /// Go to the n-th heading of the document.
@@ -554,19 +577,9 @@ impl Workspace {
     fn track_reading(&mut self, cx: &mut Context<Self>) {
         let Some(doc) = self.active_doc() else { return };
         let Some(path) = doc.path.clone() else { return };
-        let list = doc.preview.read(cx).list_state().clone();
-        let count = list.item_count();
-        if count == 0 || list.viewport_bounds().size.height <= px(0.) {
-            return;
+        if let Some(far) = self.read_so_far(cx) {
+            self.reader.note(&path, far);
         }
-        let far = match list.is_scrolled_to_end() {
-            Some(true) => 1.,
-            _ => {
-                let top = list.logical_scroll_top();
-                (top.item_ix as f32 / count as f32).min(0.99)
-            }
-        };
-        self.reader.note(&path, far);
     }
 
     // ------------------------------------------------------------- drawing
@@ -618,22 +631,39 @@ impl Workspace {
             });
 
         let rail = (!blank).then(|| self.render_rail(viewport, &p, window, cx));
-        // A hair of a line along the top edge: how much of the page is read.
+        // A line along the top edge: how much of the page has been read, on
+        // a fainter line for all of it, so that what is left can be seen too.
+        let reading = self.page_progress(cx);
         let far = transition(
             "page-progress",
-            self.page_progress(cx).unwrap_or(0.),
+            reading.unwrap_or(0.),
             motion::glide(motion::QUICK, cx),
             window,
             cx,
         );
-        let progress = (far > 0.002).then(|| {
+        let lit = transition(
+            "page-progress-lit",
+            if reading.is_some() { 1. } else { 0. },
+            motion::glide(motion::QUICK, cx),
+            window,
+            cx,
+        );
+        let progress = (lit > 0.001).then(|| {
             div()
                 .absolute()
                 .top_0()
                 .left_0()
-                .h(px(2.))
-                .w(relative(far))
-                .bg(p.accent.opacity(0.8))
+                .right_0()
+                .h(px(3.))
+                .opacity(lit)
+                .bg(p.border_subtle)
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(far.clamp(0., 1.)))
+                        .rounded_r(px(1.5))
+                        .bg(p.accent),
+                )
         });
         let side = ((viewport.width - super::frame::sheet_width(viewport)) / 2.).max(px(24.));
         let foot = self.render_page_foot(side, &p, window, cx);

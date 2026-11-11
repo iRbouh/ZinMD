@@ -338,6 +338,10 @@ pub fn style(p: &Palette, body: Pixels, dark: bool) -> TextViewStyle {
 pub struct BlockMap {
     starts: Vec<u32>,
     line_count: u32,
+    /// How much text comes before each block, in bytes, and how much there
+    /// is in all: what "half way through" is measured in.
+    before: Vec<u32>,
+    size: u32,
 }
 
 impl BlockMap {
@@ -356,10 +360,34 @@ impl BlockMap {
             previous = start.max(previous);
             starts.push(previous);
         }
+        // Where each line begins, to say how much text is before a block.
+        let mut lines = vec![0];
+        lines.extend(text.match_indices('\n').map(|(at, _)| at as u32 + 1));
+        let before = starts
+            .iter()
+            .map(|line| {
+                lines
+                    .get(*line as usize)
+                    .copied()
+                    .unwrap_or(text.len() as u32)
+            })
+            .collect();
         Self {
             starts,
             line_count: text.lines().count() as u32,
+            before,
+            size: text.len() as u32,
         }
+    }
+
+    /// How much of the text comes before the place `through` (0 to 1) block
+    /// `ix`, from 0 to 1. It goes by the amount of text, not by the number
+    /// of blocks: a long paragraph is more of a document than a short one.
+    pub fn share_before(&self, ix: usize, through: f32) -> Option<f32> {
+        let start = *self.before.get(ix)?;
+        let end = self.before.get(ix + 1).copied().unwrap_or(self.size);
+        let at = start as f32 + end.saturating_sub(start) as f32 * through.clamp(0., 1.);
+        (self.size > 0).then(|| (at / self.size as f32).clamp(0., 1.))
     }
 
     pub fn len(&self) -> usize {
@@ -406,6 +434,26 @@ mod tests {
     use super::BlockMap;
 
     const DOC: &str = "# Title\n\nFirst paragraph\nstill first.\n\n```rust\nfn main() {}\n\n```\n\n- one\n- two\n\n| a | b |\n| - | - |\n| 1 | 2 |\n";
+
+    #[test]
+    fn how_far_is_measured_in_text_not_in_blocks() {
+        // Three blocks: a short heading, a long paragraph, a short one.
+        let long = "word ".repeat(200);
+        let text = format!("# Title\n\n{long}\n\nThe end.\n");
+        let map = BlockMap::parse(&text);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.share_before(0, 0.), Some(0.));
+        // The top of the second block of three is not a third of the way.
+        assert!(map.share_before(1, 0.).unwrap() < 0.02);
+        // Half the long paragraph is about half of the text.
+        let half = map.share_before(1, 0.5).unwrap();
+        assert!((0.45..0.55).contains(&half), "{half}");
+        // The last block begins near the end, and ends at it.
+        assert!(map.share_before(2, 0.).unwrap() > 0.97);
+        assert_eq!(map.share_before(2, 1.), Some(1.));
+        assert_eq!(map.share_before(3, 0.), None);
+        assert_eq!(BlockMap::default().share_before(0, 0.), None);
+    }
 
     #[test]
     fn maps_blocks_to_lines() {
