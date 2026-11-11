@@ -11,9 +11,11 @@ mod menu;
 mod palette;
 mod panel;
 mod panes;
+mod papers;
 mod reader;
 mod search_window;
 mod statusbar;
+mod switcher;
 mod trail;
 mod updates;
 mod viewer;
@@ -33,6 +35,7 @@ use gpui_kit::*;
 // Scripted runs choose their own window size.
 #[cfg_attr(feature = "shot", allow(unused_imports))]
 pub use frame::{page_size, page_width};
+pub use papers::{open_paper, open_requested, page_bounds};
 
 use crate::doc::{self, Heading, Stats};
 use crate::files::{self, Folder};
@@ -49,6 +52,8 @@ actions!(
     zinmd,
     [
         NewFile,
+        NewWindow,
+        SideBySide,
         OpenFile,
         Save,
         SaveAs,
@@ -98,6 +103,9 @@ actions!(
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(command!("n"), NewFile, None),
+        KeyBinding::new(command!("shift-n"), NewWindow, None),
+        // The papers in a row across the screen, and back where they were.
+        KeyBinding::new(command!("alt-s"), SideBySide, None),
         KeyBinding::new(command!("o"), OpenFile, None),
         KeyBinding::new(command!("s"), Save, None),
         KeyBinding::new(command!("shift-s"), SaveAs, None),
@@ -155,6 +163,7 @@ pub fn install_menus(cx: &mut App) {
         ]),
         Menu::new("File").items([
             MenuItem::action("New", NewFile),
+            MenuItem::action("New Window", NewWindow),
             MenuItem::action("Open…", OpenFile),
             MenuItem::separator(),
             MenuItem::action("Save", Save),
@@ -195,6 +204,7 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Previous Section", PreviousSection),
             MenuItem::action("Next Section", NextSection),
             MenuItem::action("Go Back to the Last File", LastFile),
+            MenuItem::action("Papers Side by Side, or Back", SideBySide),
             MenuItem::action("Back", GoBack),
             MenuItem::action("Forward", GoForward),
             MenuItem::action("Previous File in the Folder", PreviousFile),
@@ -278,6 +288,9 @@ impl Doc {
 }
 
 pub struct Workspace {
+    /// Whether this is the first paper of the run: the one that brings back
+    /// what was open last time, and looks for updates.
+    primary: bool,
     docs: Vec<Doc>,
     active: usize,
     next_doc_id: usize,
@@ -399,11 +412,13 @@ impl Workspace {
         path: Option<PathBuf>,
         session: Session,
         started: Instant,
+        primary: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let panel = panel::Panel::new(session.panel_scroll, window, cx);
         let mut this = Self {
+            primary,
             docs: Vec::new(),
             active: 0,
             next_doc_id: 0,
@@ -547,6 +562,14 @@ impl Workspace {
             })
         });
 
+        // The paper that comes to the front is the one used last.
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                papers::came_forward(window.window_handle(), cx);
+            }
+        })
+        .detach();
+
         startup::mark("document loaded");
         this
     }
@@ -611,6 +634,66 @@ impl Workspace {
         }
         window.activate_window();
         cx.activate(true);
+    }
+
+    /// The system asked for `path`. A folder joins the side panel. A file
+    /// is a new paper, unless this one is an empty page waiting for one.
+    pub(super) fn open_asked(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = path.canonicalize().unwrap_or(path);
+        let waiting = matches!(self.docs.as_slice(), [only] if only.blank());
+        match path.is_dir() || waiting {
+            true => {
+                self.open(path, window, cx);
+                window.activate_window();
+            }
+            false => self.open_beside(Some(path), window, cx),
+        }
+    }
+
+    /// Open `path` as a paper of its own: a new window beside this one, a
+    /// little down and to the right, with the same folders in its panel.
+    /// With no path it is an empty page. A file that already has a paper is
+    /// brought to the front instead.
+    pub(super) fn open_beside(
+        &mut self,
+        path: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = path.map(|path| path.canonicalize().unwrap_or(path));
+        if let Some(there) = path.as_deref().and_then(|path| papers::showing(path, cx)) {
+            return cx.defer(move |cx| {
+                there
+                    .update(cx, |_, window, _| window.activate_window())
+                    .ok();
+            });
+        }
+        let mut session = self.session(window, cx).for_another_paper();
+        // A sheet the size of this one, or of the page this window was
+        // before it became the editor's.
+        let from = bounds_of(window);
+        let step: f32 = papers::next_step(cx).into();
+        let frame = match (self.mode, self.page) {
+            (Mode::Read, _) => from,
+            (Mode::Edit, Some(page)) => [from[0], from[1], page[2], page[3]],
+            (Mode::Edit, None) => {
+                let page = page_size(size(px(from[2]), px(from[3])));
+                [from[0], from[1], page.width.into(), page.height.into()]
+            }
+        };
+        let frame = [frame[0] + step, frame[1] + step, frame[2], frame[3]];
+        session.page = Some(frame);
+        let started = Instant::now();
+        // Once this window has finished what it is doing.
+        cx.defer(move |cx| {
+            let bounds = page_bounds(Some(frame), cx);
+            open_paper(path, session, bounds, started, false, cx);
+        });
     }
 
     /// Show a file, or add a folder to the side panel.
@@ -773,7 +856,7 @@ impl Workspace {
     }
 
     /// The state worth remembering for next time.
-    fn session(&self, window: &Window) -> Session {
+    fn session(&self, window: &Window, cx: &App) -> Session {
         // While the window is on its way between its two shapes, its size is neither's.
         let here = (!self.reshaping).then(|| bounds_of(window));
         let (page, desk) = match self.mode {
@@ -817,6 +900,7 @@ impl Workspace {
             scroll_sync: self.sync_enabled,
             panel_scroll: self.panel.scrolled(),
             progress: self.reader.progress.clone(),
+            papers: papers::others(window.window_handle(), cx),
         }
     }
 
@@ -836,7 +920,14 @@ impl Workspace {
         }
         self.session_checked = Instant::now();
         self._session_check = Task::ready(());
-        let session = self.session(window);
+        // Each paper says where it is. The one in front writes the session
+        // down: it is what was looked at last.
+        let shows = self.active_doc().and_then(|doc| doc.path.clone());
+        papers::note(window.window_handle(), shows, bounds_of(window), cx);
+        if !window.is_window_active() && papers::count(cx) > 1 {
+            return;
+        }
+        let session = self.session(window, cx);
         if self.saved_session.as_ref() == Some(&session) {
             return;
         }
@@ -1744,7 +1835,17 @@ impl Workspace {
                     eprintln!("export failed: {error}");
                 }
             }
-            "link" => self.follow_link(argument, window, cx),
+            "link" => self.follow_link(argument, false, window, cx),
+            // `beside:<path>` opens a file as a paper of its own; with no
+            // path, an empty one.
+            // Bring up the switcher between the papers.
+            "switch" => self.switch_papers(window, cx),
+            // Lay the papers side by side, or put them back.
+            "row" => cx.defer(papers::lay_side_by_side),
+            "beside" => {
+                let path = (!argument.is_empty()).then(|| PathBuf::from(argument));
+                self.open_beside(path, window, cx)
+            }
             "check" => {
                 // Click the n-th task checkbox, as the preview would report it.
                 let text = self.docs[self.active].text.clone();
@@ -1825,10 +1926,14 @@ impl Workspace {
             install_menus(cx);
             this.update(cx, |this, cx| {
                 this.opened_ms = Some(ms);
-                this.restore_files(window, cx);
-                this.restore_backups(window, cx);
+                // What was open and unsaved last time comes back in the
+                // first paper, which is also the one that looks for updates.
+                if this.primary {
+                    this.restore_files(window, cx);
+                    this.restore_backups(window, cx);
+                    this.start_updates(window, cx);
+                }
                 this.start_watching(window, cx);
-                this.start_updates(window, cx);
                 this.shape_window(window);
                 cx.notify();
             })
@@ -1874,14 +1979,10 @@ impl Render for Workspace {
         let viewer = self.render_viewer(window, cx);
         let find = self.render_find(window, cx);
         // Pictures named relative to the document are looked for beside it.
-        let shown = crate::preview::Shown {
-            folder: self
-                .active_doc()
-                .and_then(|doc| doc.path.as_deref()?.parent().map(Path::to_path_buf)),
-        };
-        if cx.try_global::<crate::preview::Shown>() != Some(&shown) {
-            cx.set_global(shown);
-        }
+        let beside = self
+            .active_doc()
+            .and_then(|doc| doc.path.as_deref()?.parent().map(Path::to_path_buf));
+        crate::preview::Shown::set(window, beside, cx);
 
         v_flex()
             .id("workspace")
@@ -1892,6 +1993,17 @@ impl Render for Workspace {
             .text_size(size::FONT_UI)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &NewFile, window, cx| this.new_document(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &NewWindow, window, cx| this.open_beside(None, window, cx)),
+            )
+            .on_action(cx.listener(|_, _: &SideBySide, _, cx| {
+                // Once this paper has finished what it is doing.
+                cx.defer(papers::lay_side_by_side)
+            }))
+            // The switcher is held up by Control: letting go chooses.
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                this.switcher_let_go(event.modifiers, cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenFile, window, cx| this.open_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &Save, window, cx| {
                 if let Some(id) = this.active_doc().map(|doc| doc.id) {
@@ -1906,7 +2018,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CloseFile, window, cx| {
                 this.request_close(this.active, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &LastFile, window, cx| this.last_file(window, cx)))
+            // With more than one paper open, the switcher; with one, back
+            // to the file read before.
+            .on_action(cx.listener(|this, _: &LastFile, window, cx| this.switch_papers(window, cx)))
             .on_action(cx.listener(|this, _: &GoBack, window, cx| this.go_along(false, window, cx)))
             .on_action(
                 cx.listener(|this, _: &GoForward, window, cx| this.go_along(true, window, cx)),
@@ -2047,6 +2161,11 @@ impl Render for Workspace {
                 }
             }))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                // The switcher between the papers has the keyboard, even
+                // when the system left it with this paper.
+                if this.switcher_key(&event.keystroke, cx) {
+                    return cx.stop_propagation();
+                }
                 // A picture open over the page has the keyboard to itself.
                 if this.viewer_key(&event.keystroke, window, cx) {
                     return cx.stop_propagation();

@@ -114,7 +114,7 @@ impl Workspace {
                 InputEvent::PressEnter { .. } => {
                     let chosen = this.search.as_ref().and_then(|search| search.chosen);
                     if let Some(chosen) = chosen.filter(|_| this.searching()) {
-                        this.open_found(chosen, window, cx);
+                        this.open_found(chosen, false, window, cx);
                     }
                 }
                 _ => {}
@@ -310,7 +310,7 @@ impl Workspace {
             "enter" => {
                 let chosen = self.search.as_ref().and_then(|search| search.chosen);
                 if let Some(chosen) = chosen {
-                    self.open_found(chosen, window, cx);
+                    self.open_found(chosen, false, window, cx);
                 }
             }
             _ => return false,
@@ -353,14 +353,24 @@ impl Workspace {
     }
 
     /// Open the file a row was found in, at its place, with the words that
-    /// were searched for marked on the page.
-    fn open_found(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// were searched for marked on the page. With `beside` it opens as a
+    /// paper of its own, at its top.
+    fn open_found(
+        &mut self,
+        row: usize,
+        beside: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(search) = &self.search else { return };
         let Some(Row::Found(found)) = search.rows.get(row) else {
             return;
         };
         let (found, sought) = (found.clone(), search.sought.clone());
         self.close_search(window, cx);
+        if beside {
+            return self.open_beside(Some(found.path.clone()), window, cx);
+        }
         self.open(found.path.clone(), window, cx);
         self.arrive_at(found.line, Some(sought), window, cx);
     }
@@ -384,7 +394,7 @@ impl Workspace {
                 .nth(nth)
         });
         if let Some(row) = row {
-            self.open_found(row, window, cx);
+            self.open_found(row, false, window, cx);
         }
     }
 
@@ -442,9 +452,11 @@ impl Workspace {
             rows.push(match row {
                 Row::Title { name, way, here } => title_row(at, name, way, *here, &p),
                 Row::Found(found) => found_row(at, found, search.chosen == Some(at), &p)
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    .on_click(cx.listener(move |this, click: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        this.open_found(at, window, cx);
+                        // With the command key held, a paper of its own.
+                        let beside = crate::system::command_held(&click.modifiers());
+                        this.open_found(at, beside, window, cx);
                     }))
                     .into_any_element(),
             });

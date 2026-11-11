@@ -42,6 +42,9 @@ pub struct Session {
     pub panel_scroll: f32,
     /// How far each file has been read, 0 to 1: the furthest point reached.
     pub progress: Vec<(PathBuf, f32)>,
+    /// The other papers that were open, each a window of its own: the file
+    /// it showed, and where its window was (x, y, width, height).
+    pub papers: Vec<(PathBuf, [f32; 4])>,
 }
 
 impl Default for Session {
@@ -60,6 +63,20 @@ impl Default for Session {
             scroll_sync: true,
             panel_scroll: 0.,
             progress: Vec::new(),
+            papers: Vec::new(),
+        }
+    }
+}
+
+impl Session {
+    /// What another paper starts from: the same folders and ways, and no
+    /// files of its own yet.
+    pub fn for_another_paper(&self) -> Self {
+        Self {
+            files: Vec::new(),
+            active: None,
+            papers: Vec::new(),
+            ..self.clone()
         }
     }
 }
@@ -162,6 +179,22 @@ impl Session {
                     .collect()
             })
             .unwrap_or_default();
+        session.papers = json["papers"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|paper| {
+                        let frame: Vec<f32> = paper["frame"]
+                            .as_array()?
+                            .iter()
+                            .filter_map(|value| value.as_f64().map(|value| value as f32))
+                            .collect();
+                        let frame = <[f32; 4]>::try_from(frame).ok()?;
+                        Some((path(&paper["path"])?, frame))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         session
     }
 
@@ -183,6 +216,11 @@ impl Session {
             .iter()
             .map(|(path, read)| json!({ "path": path, "read": read }))
             .collect();
+        let papers: Vec<Value> = self
+            .papers
+            .iter()
+            .map(|(path, frame)| json!({ "path": path, "frame": frame }))
+            .collect();
         let json = json!({
             "page": self.page,
             "desk": self.desk,
@@ -197,6 +235,7 @@ impl Session {
             "scroll_sync": self.scroll_sync,
             "panel_scroll": self.panel_scroll,
             "progress": progress,
+            "papers": papers,
         });
         serde_json::to_string_pretty(&json).unwrap_or_default()
     }
@@ -252,6 +291,7 @@ mod tests {
             scroll_sync: false,
             panel_scroll: 96.,
             progress: vec![(PathBuf::from("/notes/a.md"), 0.5)],
+            papers: vec![(PathBuf::from("/notes/b.md"), [40., 60., 620., 880.])],
         };
         assert_eq!(Session::parse(&session.to_json()), session);
     }

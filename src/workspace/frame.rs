@@ -70,7 +70,7 @@ pub fn page_size(room: Size<Pixels>) -> Size<Pixels> {
 /// bottom of the main display.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Frame {
+pub(super) struct Frame {
     x: f64,
     y: f64,
     width: f64,
@@ -135,7 +135,114 @@ fn destination(
     }
 }
 
+/// Room left around a row of papers, and between two of them.
+const ROW_GAP: f64 = 16.;
+
+/// The narrowest a paper is made to stand in a row: a window is no narrower.
+const ROW_NARROWEST: f64 = 380.;
+
+/// Where `count` papers go to stand side by side on `display`: sheets of
+/// one size, as tall as the display has room for, in a row in the middle,
+/// from left to right. When that many would be too narrow in one row, they
+/// stand in two rows, or three.
+pub(super) fn side_by_side(display: Frame, count: usize) -> Vec<Frame> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let sheet_in =
+        |width: f64| (width / (1. + 2. * MARGIN as f64)).min(width - 2. * MARGIN_LEAST as f64);
+    // How many rows, how many to a row, and how wide and tall each is.
+    let mut rows = 1;
+    let (across, width, height) = loop {
+        let across = count.div_ceil(rows);
+        let room = (display.width - (across as f64 + 1.) * ROW_GAP) / across as f64;
+        let tallest = ((display.height - (rows as f64 + 1.) * ROW_GAP) / rows as f64)
+            .min(PAGE_TALLEST as f64);
+        let width = with_margins(tallest / SHEET as f64).min(room).floor();
+        if width >= ROW_NARROWEST || rows == 3 {
+            // As tall as a sheet that wide, when there is the room.
+            let height = (sheet_in(width) * SHEET as f64).min(tallest).round();
+            break (across, width, height);
+        }
+        rows += 1;
+    };
+    let all = rows as f64 * height + (rows as f64 - 1.) * ROW_GAP;
+    // The system counts up from the foot of the display: the first row is
+    // the highest.
+    let top = display.y + (display.height + all) / 2.;
+    (0..count)
+        .map(|nth| {
+            let (row, place) = (nth / across, nth % across);
+            let here = (count - row * across).min(across) as f64;
+            let wide = here * width + (here - 1.) * ROW_GAP;
+            let left = display.x + ((display.width - wide) / 2.).max(ROW_GAP);
+            Frame {
+                x: (left + place as f64 * (width + ROW_GAP)).round(),
+                y: (top - (row as f64 + 1.) * height - row as f64 * ROW_GAP).round(),
+                width,
+                height,
+            }
+        })
+        .collect()
+}
+
+/// Where a window is, and the part of its display that windows may use, in
+/// the system's terms. `None` where the system is not asked.
+pub(super) fn frames_of(window: &Window) -> Option<(Frame, Frame)> {
+    let native = native::Native::of(window)?;
+    Some((native.frame()?, native.display()?))
+}
+
+impl Frame {
+    /// How far to the right it is: what papers are put in order by.
+    pub(super) fn left(&self) -> f64 {
+        self.x
+    }
+}
+
 impl Workspace {
+    /// Glide the window to `to`: one paper of several being laid side by
+    /// side, or put back where it was.
+    pub(super) fn glide_window(&mut self, to: Frame, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_fullscreen() {
+            return;
+        }
+        let Some(native) = native::Native::of(window) else {
+            return;
+        };
+        let Some(from) = native.frame() else { return };
+        native.hold_shape(None);
+        self.reshaping = true;
+        let still = cx.reduce_motion();
+        self._reshape = cx.spawn(async move |this, cx| {
+            let started = Instant::now();
+            loop {
+                let progress = match still {
+                    true => 1.,
+                    false => (started.elapsed().as_secs_f32() / RESHAPE.as_secs_f32()).min(1.),
+                };
+                native.set_frame(from.towards(to, motion::ease(progress) as f64));
+                if progress >= 1. {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(7))
+                    .await;
+                if this.update(cx, |_, _| ()).is_err() {
+                    return;
+                }
+            }
+            this.update(cx, |this, cx| {
+                this.reshaping = false;
+                if this.mode == Mode::Read {
+                    native.hold_shape(Some(to.height / to.width));
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
     /// Give the window the shape of the mode it is now in, gliding there.
     pub(super) fn reshape_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.is_fullscreen() {
@@ -322,7 +429,7 @@ mod tests {
     // the parent's glob import and shadow the standard one.
     use super::{
         Frame, MARGIN_LEAST, Mode, PAGE_TALLEST, SHEET, destination, page_size, sheet_width,
-        with_margins,
+        side_by_side, with_margins,
     };
     use gpui_kit::{px, size};
 
@@ -332,6 +439,39 @@ mod tests {
         width: 1512.,
         height: 900.,
     };
+
+    #[test]
+    fn papers_side_by_side_are_one_size_in_rows_that_fit() {
+        let sheet_in = |width: f64| (width / 1.14).min(width - 2. * MARGIN_LEAST as f64);
+        // Two fit at their full height, in the middle.
+        let two = side_by_side(DISPLAY, 2);
+        assert_eq!(two.len(), 2);
+        assert_eq!((two[0].width, two[0].height), (two[1].width, two[1].height));
+        assert_eq!(two[0].height, 868.);
+        assert_eq!(two[0].width, with_margins(868. / SHEET as f64));
+        assert_eq!((two[0].y, two[1].y), (96., 96.));
+        assert_eq!(two[1].x, two[0].x + two[0].width + 16.);
+        let (left, right) = (two[0].x, 1512. - (two[1].x + two[1].width));
+        assert!((left - right).abs() <= 1., "{left} and {right}");
+        // Four would be too narrow in a row: two rows of two, the first above.
+        let four = side_by_side(DISPLAY, 4);
+        assert_eq!((four[0].y, four[1].y), (four[1].y, four[0].y));
+        assert_eq!(four[2].y, four[3].y);
+        assert!(four[0].y > four[2].y + four[2].height);
+        assert_eq!(four[0].x, four[2].x);
+        // Five: three, then two in the middle under them.
+        let five = side_by_side(DISPLAY, 5);
+        assert!(five[3].x > five[0].x && five[4].x + five[4].width < five[2].x + five[2].width);
+        for paper in two.iter().chain(&four).chain(&five) {
+            // Each is a sheet, no narrower than a window is, and on the display.
+            assert!(paper.width >= 380.);
+            let sheet = sheet_in(paper.width) * SHEET as f64;
+            assert!((paper.height - sheet).abs() <= 1., "{paper:?}");
+            assert!(paper.x >= 16. && paper.x + paper.width <= 1512. - 16.);
+            assert!(paper.y >= DISPLAY.y && paper.y + paper.height <= DISPLAY.y + DISPLAY.height);
+        }
+        assert!(side_by_side(DISPLAY, 0).is_empty());
+    }
 
     #[test]
     fn a_page_is_a_sheet_hanging_from_the_same_top_edge() {

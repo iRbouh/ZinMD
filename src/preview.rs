@@ -50,13 +50,37 @@ pub fn parse_options() -> markdown::ParseOptions {
     options
 }
 
-/// The document on show: what its pictures are named relative to.
-#[derive(Default, PartialEq)]
+/// The document on show in each window: what its pictures are named
+/// relative to.
+#[derive(Default)]
 pub struct Shown {
-    pub folder: Option<PathBuf>,
+    folders: HashMap<WindowId, Option<PathBuf>>,
 }
 
 impl Global for Shown {}
+
+impl Shown {
+    /// The folder of the document on show in `window`.
+    pub fn folder(window: &Window, cx: &App) -> Option<PathBuf> {
+        let shown = cx.try_global::<Self>()?;
+        shown
+            .folders
+            .get(&window.window_handle().window_id())?
+            .clone()
+    }
+
+    /// Say which folder the document on show in `window` is in. Said every
+    /// frame: nothing is touched unless it changed.
+    pub fn set(window: &Window, folder: Option<PathBuf>, cx: &mut App) {
+        let id = window.window_handle().window_id();
+        let known = cx
+            .try_global::<Self>()
+            .and_then(|shown| shown.folders.get(&id));
+        if known != Some(&folder) {
+            cx.default_global::<Self>().folders.insert(id, folder);
+        }
+    }
+}
 
 /// Something on the page that can be looked at closely: opened large over
 /// the page, zoomed, copied, saved.

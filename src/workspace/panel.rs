@@ -1979,8 +1979,12 @@ impl Workspace {
                         .border_color(p.accent),
                 )
             })
-            .on_click(cx.listener(move |this, _, window, cx| {
+            .on_click(cx.listener(move |this, click: &ClickEvent, window, cx| {
                 match (&target, doc.and_then(|id| this.doc_ix(id))) {
+                    // With the command key held, a paper of its own.
+                    (Some(path), _) if system::command_held(&click.modifiers()) => {
+                        this.open_beside(Some(path.clone()), window, cx);
+                    }
                     (Some(path), _) => {
                         if searching {
                             this.clear_search(window, cx);

@@ -11,6 +11,9 @@
 //! then nothing that moves gets anywhere: what fades in is never seen. With
 //! it, a run gives the same picture whatever else is on the screen. Leave it
 //! off to time frames: these extra ones would be counted.
+//!
+//! `ZINMD_WINDOW=last` takes the picture of the window opened last, rather
+//! than the first: another paper, or the switcher.
 
 use std::time::{Duration, Instant};
 
@@ -120,13 +123,19 @@ async fn wait(window: AnyWindowHandle, time: Duration, cx: &mut AsyncApp) {
     if std::env::var_os("ZINMD_DRAW").is_none() {
         return cx.background_executor().timer(time).await;
     }
+    let _ = window;
     let until = Instant::now() + time;
     while Instant::now() < until {
-        cx.update_window(window, |_, window, cx| {
-            window.refresh();
-            window.draw(cx).clear(cx);
-        })
-        .ok();
+        // Every window: a paper opened on the way, the switcher.
+        cx.update(|cx| {
+            for window in cx.windows() {
+                cx.update_window(window, |_, window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                })
+                .ok();
+            }
+        });
         cx.background_executor()
             .timer(Duration::from_millis(16))
             .await;
@@ -175,7 +184,11 @@ pub fn after_first_frame(window: AnyWindowHandle, workspace: Entity<Workspace>, 
             workspace.update(cx, |workspace, _| workspace.report_frames())
         })
         .ok();
-        cx.update_window(window, |_, window, cx| {
+        let pictured = cx.update(|cx| match std::env::var("ZINMD_WINDOW").as_deref() {
+            Ok("last") => cx.windows().last().copied().unwrap_or(window),
+            _ => window,
+        });
+        cx.update_window(pictured, |_, window, cx| {
             window.refresh();
             match window.render_to_image() {
                 Ok(image) => match image.save(&path) {

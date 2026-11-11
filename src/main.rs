@@ -35,10 +35,8 @@ mod workspace;
 
 use std::path::PathBuf;
 
-use gpui_kit::*;
-
-use crate::theme::size;
-use crate::workspace::Workspace;
+#[cfg(feature = "shot")]
+use gpui_kit::Bounds;
 
 fn main() {
     // `zinmd --version` says which ZinMD this is and leaves, opening nothing.
@@ -80,98 +78,46 @@ fn main() {
         let session = session::Session::load();
         // The window opens as a page: the shape of a sheet of paper.
         #[cfg(not(feature = "shot"))]
-        let window_bounds = remembered_bounds(&session, cx);
+        let window_bounds = workspace::page_bounds(session.page, cx);
         #[cfg(feature = "shot")]
         let window_bounds = Bounds::centered(None, shot::window_size(cx), cx);
 
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-            window_min_size: Some(gpui_kit::size(px(380.), px(420.))),
-            titlebar: Some(TitlebarOptions {
-                title: None,
-                appears_transparent: true,
-                // Centres the window buttons in our taller title bar.
-                traffic_light_position: Some(point(px(14.), (size::TITLEBAR - px(16.)) / 2.)),
-            }),
-            // Our title bar moves the window itself, so clicks on it are never delayed.
-            app_owns_titlebar_drag: true,
-            // On Linux the bar at the top is ours too, not a second one from
-            // the desktop, and the window answers to the name of its launcher.
-            window_decorations: Some(WindowDecorations::Client),
-            app_id: Some(system::APP_ID.into()),
-            focus: cfg!(not(feature = "shot")),
-            // Scripted runs stay in the background, where frames are normally
-            // held to 30 a second; lift that so they measure real smoothness.
-            #[cfg(feature = "shot")]
-            inactive_frame_interval: None,
-            ..Default::default()
-        };
         // A file double-clicked in Finder arrives as a request, not an argument.
         // If it is already here, open straight into it.
         let mut asked = requests.take_ready().into_iter();
         let path = path.or_else(|| asked.next());
-        let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
-            startup::mark("native window created");
-            cx.new(|cx| Workspace::new(path, session, started, window, cx))
-        })
-        .expect("failed to open the main window");
+        // With nothing asked for, the other papers of last time come back
+        // too, each where it was.
+        let papers = match path {
+            Some(_) => Vec::new(),
+            None => session.papers.clone(),
+        };
+        let beside = session.for_another_paper();
+        let (window, _workspace) =
+            workspace::open_paper(path, session, window_bounds, started, true, cx)
+                .expect("failed to open the main window");
         startup::mark("window opened");
+        for (file, frame) in papers.into_iter().filter(|(file, _)| file.is_file()) {
+            let bounds = workspace::page_bounds(Some(frame), cx);
+            workspace::open_paper(Some(file), beside.clone(), bounds, started, false, cx);
+        }
+        // The paper that was in front last time is in front again.
+        window
+            .update(cx, |_, window, _| window.activate_window())
+            .ok();
 
         // Everything else that was asked for, and whatever is asked for later.
         let rest: Vec<PathBuf> = asked.collect();
-        let opener = workspace.downgrade();
         cx.spawn(async move |cx| {
             let mut paths = Some(rest);
             while let Some(batch) = paths.take() {
-                let opened = cx.update_window(window, |_, window, cx| {
-                    opener
-                        .update(cx, |workspace, cx| {
-                            workspace.open_requested(batch, window, cx)
-                        })
-                        .is_ok()
-                });
-                if !matches!(opened, Ok(true)) {
-                    break;
-                }
+                cx.update(|cx| workspace::open_requested(batch, cx));
                 paths = requests.next().await;
             }
         })
         .detach();
 
         #[cfg(feature = "shot")]
-        shot::after_first_frame(window, workspace, cx);
+        shot::after_first_frame(window, _workspace, cx);
     });
-}
-
-/// Where the page was last time, if that place still exists: a display may
-/// have been unplugged since. Otherwise a sheet as tall as the display has
-/// room for, in the centre.
-#[cfg(not(feature = "shot"))]
-fn remembered_bounds(session: &session::Session, cx: &App) -> Bounds<Pixels> {
-    let fallback = || {
-        let room = cx
-            .primary_display()
-            .map_or(gpui_kit::size(px(1440.), px(900.)), |display| {
-                display.visible_bounds().size
-            });
-        Bounds::centered(None, workspace::page_size(room), cx)
-    };
-    let Some([x, y, width, height]) = session.page else {
-        return fallback();
-    };
-    // A page has the shape of a sheet with its margins, whatever shape it was
-    // left in: it comes back as tall as it was, about the same centre line.
-    let sheet: f32 = workspace::page_width(px(height)).into();
-    let (x, width) = (x + (width - sheet) / 2., sheet);
-    let bounds = Bounds::new(point(px(x), px(y)), gpui_kit::size(px(width), px(height)));
-    // Enough of the title bar must be on some display to grab the window by.
-    let grip = Bounds::new(
-        bounds.origin,
-        gpui_kit::size(bounds.size.width, size::TITLEBAR),
-    );
-    let reachable = cx.displays().iter().any(|display| {
-        let overlap = display.bounds().intersect(&grip);
-        overlap.size.width >= px(120.) && overlap.size.height >= px(20.)
-    });
-    if reachable { bounds } else { fallback() }
 }

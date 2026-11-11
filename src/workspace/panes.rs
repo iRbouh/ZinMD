@@ -346,9 +346,11 @@ impl Workspace {
                     })
                     .ok();
             })
-            .on_link_click(move |url, _, window, cx| {
+            .on_link_click(move |url, click, window, cx| {
+                // With the command key held, a note opens as a paper of its own.
+                let beside = crate::system::command_held(&click.modifiers());
                 on_link
-                    .update(cx, |this, cx| this.follow_link(url, window, cx))
+                    .update(cx, |this, cx| this.follow_link(url, beside, window, cx))
                     .ok();
             })
             .text_size(body)
@@ -440,8 +442,15 @@ impl Workspace {
         });
     }
 
-    /// A link was clicked in the preview.
-    pub(super) fn follow_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// A link was clicked in the preview. With `beside`, a note it leads to
+    /// opens as a paper of its own.
+    pub(super) fn follow_link(
+        &mut self,
+        url: &str,
+        beside: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(anchor) = url.strip_prefix('#') {
             self.jump_to_anchor(anchor, window, cx);
             return;
@@ -470,6 +479,9 @@ impl Workspace {
             _ => path,
         };
         if files::is_markdown(&target) && target.is_file() {
+            if beside {
+                return self.open_beside(Some(target), window, cx);
+            }
             self.open(target, window, cx);
             if !anchor.is_empty() {
                 self.jump_to_anchor(anchor, window, cx);

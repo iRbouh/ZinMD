@@ -50,6 +50,9 @@ A file opens as a page to read, in a window the shape of a sheet of paper.
   are in
 - The top of the page says which heading you are under, and a hair of a
   line along its edge how far you have read
+- Papers: a file can have a window of its own, the shape of a sheet. Put
+  them side by side to read two at once, and switch between them with a
+  switcher that shows each one small, where you left it
 - Back and forward, as in a browser: follow a link, a heading or a search
   result, and one key takes you back to where you were
 - The files before and after the one you read, as two quiet links at the
@@ -148,7 +151,10 @@ The files land in `dist/`.
 | `⌘K` | Find a file in the side panel |
 | `⌘\` | Show or hide the side panel |
 | `⌘1` to `⌘9` | Go to a file opened on its own |
-| `⌃Tab` | Back to the last file |
+| `⌃Tab` | With several windows open: the switcher (hold `⌃`, press `Tab`, let go). With one: back to the last file |
+| `⌘`-click | Open a file, a link or a search result in a window of its own |
+| `⇧⌘N` | New window |
+| `⌥⌘S` | Lay the windows side by side, and put them back (macOS) |
 | `⌘[` `⌘]` | Back to where you were, and forward again |
 | `⇧⌘[` `⇧⌘]` | The file before, and after, this one in its folder |
 | `⇧⌘C` `⌥⌘C` | Copy the file's content, its path |

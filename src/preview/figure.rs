@@ -77,9 +77,7 @@ impl MarkdownPlugin for Figure {
             return div().into_any_element();
         };
         let p = *cx.palette();
-        let folder = cx
-            .try_global::<Shown>()
-            .and_then(|shown| shown.folder.clone());
+        let folder = Shown::folder(window, cx);
         let source = super::image_source(&picture.url, folder.as_deref());
         let file = match &source {
             ImageSource::Resource(Resource::Path(path)) => Some(PathBuf::from(path.as_ref())),

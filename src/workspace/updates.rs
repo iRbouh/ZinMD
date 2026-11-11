@@ -230,7 +230,7 @@ impl Workspace {
             return;
         };
         self.back_up_now();
-        self.session(window).save();
+        self.session(window, cx).save();
         match update::swap_in(&ready, &self.install) {
             Ok(()) => {
                 self.close_confirmed = true;
