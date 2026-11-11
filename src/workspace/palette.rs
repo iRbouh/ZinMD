@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_kit::component::{ActiveTheme as _, Icon, IndexPath, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IndexPath, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -30,6 +30,9 @@ enum Target {
     /// A line of a file, found by searching the folder.
     Line(PathBuf, u32),
     Command,
+    /// A row that only says something: the name of a file above what was
+    /// found in it.
+    Title,
 }
 
 /// One thing the palette offers.
@@ -38,6 +41,8 @@ enum Choice {
     Plain(IconName, SharedString, Option<Box<dyn Action>>),
     /// A part of a file that the search found.
     Found(Rc<Found>),
+    /// The file the rows under it were found in: its name, and where it is.
+    Title(SharedString, SharedString),
 }
 
 /// What is shown of a part of a file that was found.
@@ -273,15 +278,13 @@ impl Workspace {
                 );
                 let (mut targets, mut groups) = (Vec::new(), Vec::new());
                 for (path, hits) in files {
-                    let title = match Some(&path) == here.as_ref() {
-                        true => "On this page".into(),
-                        false => this.place_of(&path),
+                    // The first row of each file says which file it is.
+                    let (name, way) = match Some(&path) == here.as_ref() {
+                        true => ("On this page".into(), "".into()),
+                        false => this.name_and_way(&path),
                     };
-                    targets.push(
-                        hits.iter()
-                            .map(|hit| Target::Line(path.clone(), hit.line))
-                            .collect(),
-                    );
+                    let lines = hits.iter().map(|hit| Target::Line(path.clone(), hit.line));
+                    targets.push(std::iter::once(Target::Title).chain(lines).collect());
                     let rows = hits.into_iter().map(|hit| {
                         Choice::Found(Rc::new(Found {
                             text: hit.text.into(),
@@ -290,7 +293,8 @@ impl Workspace {
                             in_heading: hit.in_heading,
                         }))
                     });
-                    groups.push((title, rows.collect()));
+                    let title = Choice::Title(name, way);
+                    groups.push(("".into(), std::iter::once(title).chain(rows).collect()));
                 }
                 if let Some(palette) = this.palette.as_mut() {
                     palette.targets = Rc::new(targets);
@@ -323,6 +327,36 @@ impl Workspace {
         place.into()
     }
 
+    /// A file as the panel names it, and the folders on the way to it from
+    /// the folder of the panel it is in: `overview` and `docs / api`. A long
+    /// way is said by its end, which is what tells two files apart.
+    fn name_and_way(&self, path: &Path) -> (SharedString, SharedString) {
+        const STEPS: usize = 3;
+        let above = path.parent().unwrap_or(Path::new(""));
+        let mut steps: Vec<String> = match self.folder_of(path) {
+            Some(folder) => {
+                let folder = &self.folders[folder];
+                let inside = above.strip_prefix(&folder.root).unwrap_or(Path::new(""));
+                std::iter::once(folder.name.to_string())
+                    .chain(
+                        inside
+                            .iter()
+                            .map(|step| step.to_string_lossy().into_owned()),
+                    )
+                    .collect()
+            }
+            None => above
+                .iter()
+                .map(|step| step.to_string_lossy().into_owned())
+                .collect(),
+        };
+        if steps.len() > STEPS {
+            steps.drain(..steps.len() - STEPS);
+            steps.insert(0, "…".into());
+        }
+        (files::display_name(path).into(), steps.join(" / ").into())
+    }
+
     pub(super) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(palette) = self.palette.take() {
             // It stays on screen a moment longer, fading, with nothing left to click.
@@ -352,7 +386,7 @@ impl Workspace {
                 self.open(path.clone(), window, cx);
                 self.arrive_at(*line, Some(sought), window, cx);
             }
-            Some(Target::Command) | None => {}
+            Some(Target::Command | Target::Title) | None => {}
         }
     }
 
@@ -401,7 +435,8 @@ impl Workspace {
                         .ok();
                 }
             })
-            .max_h(px(420.))
+            // Rows that were found are given more room than commands are.
+            .max_h(px(if searching { 480. } else { 420. }))
             .on_confirm(move |at, window, cx| {
                 confirm
                     .update(cx, |this, cx| this.run_palette_target(at, window, cx))
@@ -422,15 +457,20 @@ impl Workspace {
                     }
                 }
                 Choice::Found(found) => found_row(found.clone(), p),
+                Choice::Title(name, way) => title_row(name.clone(), way.clone(), p),
             });
-            command = command.group(CommandGroup::new().label(title.clone()).items(items));
+            let group = match title.is_empty() {
+                true => CommandGroup::new(),
+                false => CommandGroup::new().label(title.clone()),
+            };
+            command = command.group(group.items(items));
         }
         if !palette.told.is_empty() {
             let told = palette.told.clone();
             command = command.footer(move |_, _, _| {
                 div()
-                    .px(px(14.))
-                    .py(px(7.))
+                    .px(px(18.))
+                    .py(px(9.))
                     .border_t_1()
                     .border_color(p.border_raised)
                     .text_size(size::FONT_UI_SMALL)
@@ -459,7 +499,7 @@ impl Workspace {
                 .child(
                     div()
                         .id("palette")
-                        .w(px(600.))
+                        .w(px(if searching { 660. } else { 600. }))
                         .max_w(relative(0.9))
                         .rounded(size::RADIUS_LG)
                         .border_1()
@@ -508,7 +548,11 @@ fn found_row(found: Rc<Found>, p: Palette) -> CommandItem {
             h_flex()
                 .flex_1()
                 .min_w_0()
-                .gap_2()
+                // Room above and below, and at the sides: these are lines to
+                // read, not names to pick from.
+                .py(px(4.))
+                .px(px(4.))
+                .gap(px(10.))
                 .items_center()
                 .child(Icon::new(icon).size_4().text_color(p.text_tertiary))
                 .child(
@@ -533,4 +577,38 @@ fn found_row(found: Rc<Found>, p: Palette) -> CommandItem {
                     )
                 })
         })
+}
+
+/// The row that says which file the rows under it were found in: its name,
+/// then, fainter, the folders on the way to it. It is said, not chosen, and
+/// stands a little apart from the file above.
+fn title_row(name: SharedString, way: SharedString, p: Palette) -> CommandItem {
+    CommandItem::new().disabled(true).child(move |_, _| {
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .pt(px(10.))
+            .px(px(4.))
+            .gap(px(8.))
+            .items_baseline()
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(relative(0.6))
+                    .truncate()
+                    .text_size(size::FONT_UI_SMALL)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.text_secondary)
+                    .child(name.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.))
+                    .text_color(p.text_tertiary)
+                    .child(way.clone()),
+            )
+    })
 }
