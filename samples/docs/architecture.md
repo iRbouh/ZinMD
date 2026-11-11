@@ -1,9 +1,9 @@
 ---
-title: ZwinMD architecture
+title: ZinMD architecture
 tags: [gpui, rust, markdown]
 ---
 
-# ZwinMD architecture
+# ZinMD architecture
 
 A **native** Markdown editor built on [GPUI](https://gpui.rs).
 No browser inside, so it opens before you finish the click.

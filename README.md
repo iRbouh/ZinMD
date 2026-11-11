@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="design/logo/png/app-icon-256.png" width="128" height="128" alt="ZwinMD icon: a zellij rosette, mustard on black">
+  <img src="design/logo/png/app-icon-256.png" width="128" height="128" alt="ZinMD icon: a zellij rosette, mustard on black">
 </p>
 
-<h1 align="center">ZwinMD</h1>
+<h1 align="center">ZinMD</h1>
 
 <p align="center">A fast, native Markdown editor and viewer for macOS.</p>
 
 There is no browser inside. It is written in Rust on GPUI and draws
 everything itself, so it opens in about 0.1 to 0.15 seconds on an Apple M4 Pro.
 
-![ZwinMD showing a document in split view](docs/screenshot.png)
+![ZinMD showing a document in split view](docs/screenshot.png)
 
 ## What it does
 
@@ -32,7 +32,7 @@ You need macOS and a recent Rust toolchain (it is built with Rust 1.98).
 # Run it on a file or a folder
 cargo run --release -- path/to/notes.md
 
-# Make the app: target/ZwinMD.app
+# Make the app: target/ZinMD.app
 ./scripts/bundle.sh
 ```
 

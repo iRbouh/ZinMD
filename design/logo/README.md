@@ -1,4 +1,4 @@
-# ZwinMD logo
+# ZinMD logo
 
 The mark is a zellij rosette: the eight-point star and its eight petals, the
 middle of a Moroccan tile pattern.
@@ -17,4 +17,4 @@ Colours: mustard `#E1AD01`, light mustard `#EBC034`, ink `#1E1D1A`, cream `#FBFA
 After changing a drawing, run `scripts/icon.sh`. It rebuilds the two `.icns`
 files in `assets` and the PNG copies here.
 
-The sketches that led here are in `design/ZwinMD-logos.figcraft`.
+The sketches that led here are in `design/ZinMD-logos.figcraft`.

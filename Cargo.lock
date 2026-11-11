@@ -9983,6 +9983,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "zinmd"
+version = "0.1.0"
+dependencies = [
+ "data-url",
+ "futures",
+ "gpui-kit",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "markdown",
+ "merman",
+ "notify",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-svg",
+ "ratex-types",
+ "serde_json",
+ "trash",
+]
+
+[[package]]
 name = "zlib-rs"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10086,24 +10106,4 @@ dependencies = [
  "serde",
  "syn 3.0.10",
  "winnow 1.0.5",
-]
-
-[[package]]
-name = "zwinmd"
-version = "0.1.0"
-dependencies = [
- "data-url",
- "futures",
- "gpui-kit",
- "gpui-pre",
- "gpui-pre-platform",
- "markdown",
- "merman",
- "notify",
- "ratex-layout",
- "ratex-parser",
- "ratex-svg",
- "ratex-types",
- "serde_json",
- "trash",
 ]

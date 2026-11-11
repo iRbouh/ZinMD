@@ -357,7 +357,7 @@ mod tests {
     use super::{draw, themed};
     use crate::theme::Palette;
 
-    /// Draws real diagrams. Set `ZWINMD_DIAGRAMS=<folder>` to keep the pictures.
+    /// Draws real diagrams. Set `ZINMD_DIAGRAMS=<folder>` to keep the pictures.
     #[test]
     fn draws_diagrams() {
         let diagrams = [
@@ -384,7 +384,7 @@ mod tests {
                 );
                 println!("{name} {mode}: {width} x {height}");
                 assert!(width > 50. && height > 20., "{name} is too small");
-                if let Ok(folder) = std::env::var("ZWINMD_DIAGRAMS") {
+                if let Ok(folder) = std::env::var("ZINMD_DIAGRAMS") {
                     std::fs::write(format!("{folder}/{name}-{mode}.png"), picture.image.bytes())
                         .unwrap();
                 }

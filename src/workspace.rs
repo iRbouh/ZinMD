@@ -34,7 +34,7 @@ use crate::theme::{self, ActivePalette as _, size};
 use crate::ui;
 
 actions!(
-    zwinmd,
+    zinmd,
     [
         NewFile,
         OpenFile,
@@ -102,7 +102,7 @@ pub fn init(cx: &mut App) {
 /// 11 ms), so this is called once the first frame is on screen.
 pub fn install_menus(cx: &mut App) {
     cx.set_menus(vec![
-        Menu::new("ZwinMD").items([MenuItem::action("Quit ZwinMD", Quit)]),
+        Menu::new("ZinMD").items([MenuItem::action("Quit ZinMD", Quit)]),
         Menu::new("File").items([
             MenuItem::action("New", NewFile),
             MenuItem::action("Open…", OpenFile),
@@ -1131,7 +1131,7 @@ impl Workspace {
         }
     }
 
-    /// One step of a `ZWINMD_SCRIPT`, standing in for the user in scripted checks:
+    /// One step of a `ZINMD_SCRIPT`, standing in for the user in scripted checks:
     /// `editor:<px>` and `preview:<px>` scroll a pane, `type:<text>` types at the
     /// caret, `line:<n>` moves the caret, `view:editor|split|preview`, `sidebar`,
     /// `sync`, `new`, `open:<path>`, `save` and `close` run those commands,

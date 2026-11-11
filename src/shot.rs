@@ -1,9 +1,9 @@
 //! Developer tool, only built with `--features shot`.
 //!
-//! `ZWINMD_SHOT=out.png` saves what the window draws to a PNG, then quits. This
+//! `ZINMD_SHOT=out.png` saves what the window draws to a PNG, then quits. This
 //! needs no screen-recording permission and works with the window hidden.
-//! `ZWINMD_SIZE=1420x888` sets the window size, `ZWINMD_THEME=dark|light` the appearance.
-//! `ZWINMD_SCRIPT="type:Hello;save;editor:600"` drives the app first; the steps
+//! `ZINMD_SIZE=1420x888` sets the window size, `ZINMD_THEME=dark|light` the appearance.
+//! `ZINMD_SCRIPT="type:Hello;save;editor:600"` drives the app first; the steps
 //! are listed at `Workspace::debug_step`.
 
 use std::time::Duration;
@@ -14,12 +14,12 @@ use gpui_kit::*;
 use crate::workspace::Workspace;
 
 pub fn window_size(cx: &mut App) -> Size<Pixels> {
-    match std::env::var("ZWINMD_THEME").as_deref() {
+    match std::env::var("ZINMD_THEME").as_deref() {
         Ok("dark") => crate::theme::set_mode(ThemeMode::Dark, false, cx),
         Ok("light") => crate::theme::set_mode(ThemeMode::Light, false, cx),
         _ => {}
     }
-    std::env::var("ZWINMD_SIZE")
+    std::env::var("ZINMD_SIZE")
         .ok()
         .and_then(|value| {
             let (w, h) = value.split_once('x')?;
@@ -78,7 +78,7 @@ fn pointer_step(step: &str) -> Option<Vec<PlatformInput>> {
 }
 
 pub fn after_first_frame(window: AnyWindowHandle, workspace: Entity<Workspace>, cx: &mut App) {
-    let Ok(path) = std::env::var("ZWINMD_SHOT") else {
+    let Ok(path) = std::env::var("ZINMD_SHOT") else {
         return;
     };
     cx.spawn(async move |cx| {
@@ -87,7 +87,7 @@ pub fn after_first_frame(window: AnyWindowHandle, workspace: Entity<Workspace>, 
             .timer(Duration::from_millis(400))
             .await;
         // Run the script one step at a time, giving each time to settle.
-        // `ZWINMD_PAUSE` sets how long; `ZWINMD_SETTLE` how long to wait before
+        // `ZINMD_PAUSE` sets how long; `ZINMD_SETTLE` how long to wait before
         // the picture, so a short one catches an animation midway.
         let millis = |name: &str, default: u64| {
             Duration::from_millis(
@@ -97,7 +97,7 @@ pub fn after_first_frame(window: AnyWindowHandle, workspace: Entity<Workspace>, 
                     .unwrap_or(default),
             )
         };
-        let script = std::env::var("ZWINMD_SCRIPT").unwrap_or_default();
+        let script = std::env::var("ZINMD_SCRIPT").unwrap_or_default();
         for step in script.split(';').filter(|step| !step.is_empty()) {
             let step = step.to_string();
             eprintln!("step {step}");
@@ -115,11 +115,11 @@ pub fn after_first_frame(window: AnyWindowHandle, workspace: Entity<Workspace>, 
             })
             .ok();
             cx.background_executor()
-                .timer(millis("ZWINMD_PAUSE", 150))
+                .timer(millis("ZINMD_PAUSE", 150))
                 .await;
         }
         cx.background_executor()
-            .timer(millis("ZWINMD_SETTLE", 600))
+            .timer(millis("ZINMD_SETTLE", 600))
             .await;
         cx.update_window(window, |_, _, cx| {
             workspace.update(cx, |workspace, _| workspace.report_frames())

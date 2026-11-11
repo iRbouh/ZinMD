@@ -1,6 +1,6 @@
 //! Colours, sizes and fonts.
 //!
-//! `Palette` mirrors the "Theme" variable collection in `design/zwinMD-UI.figcraft`:
+//! `Palette` mirrors the "Theme" variable collection in `design/zinMD-UI.figcraft`:
 //! same names, same values, one Light and one Dark set. Everything the app paints
 //! itself reads from it. `kit_config` projects the same palette onto the component
 //! kit, so its editor, scrollbars and popovers match without a second colour list.
@@ -354,7 +354,7 @@ fn kit_config(p: &Palette, mode: ThemeMode, settings: &Settings) -> ThemeConfig 
     let bold = |color: Hsla| serde_json::json!({ "color": hex(color), "font_weight": 700 });
 
     let config = serde_json::json!({
-        "name": if dark { "ZwinMD Dark" } else { "ZwinMD Light" },
+        "name": if dark { "ZinMD Dark" } else { "ZinMD Light" },
         "mode": if dark { "dark" } else { "light" },
         "font.family": UI_FONT,
         "font.size": 13,

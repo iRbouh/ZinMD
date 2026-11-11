@@ -110,16 +110,16 @@ impl Session {
     }
 }
 
-/// Where the app keeps what it remembers. `ZWINMD_DATA` points it elsewhere,
+/// Where the app keeps what it remembers. `ZINMD_DATA` points it elsewhere,
 /// so tests and scripted runs leave the real settings alone.
 pub fn data_dir() -> PathBuf {
-    if let Some(folder) = std::env::var_os("ZWINMD_DATA") {
+    if let Some(folder) = std::env::var_os("ZINMD_DATA") {
         return PathBuf::from(folder);
     }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
-    home.join("Library/Application Support/ZwinMD")
+    home.join("Library/Application Support/ZinMD")
 }
 
 #[cfg(test)]

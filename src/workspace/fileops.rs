@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn never_replaces_existing_files() {
-        let folder = std::env::temp_dir().join(format!("zwinmd-fileops-{}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("zinmd-fileops-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let (a, b) = (folder.join("a.md"), folder.join("b.md"));
         create_new(&a).unwrap();

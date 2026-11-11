@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn finds_lines_ignoring_case() {
-        let folder = std::env::temp_dir().join(format!("zwinmd-search-{}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("zinmd-search-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let (a, b) = (folder.join("a.md"), folder.join("b.md"));
         std::fs::write(&a, "# Title\n\nThe Quick brown fox.\nnothing here\n").unwrap();

@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn opens_and_closes_folders() {
-        let root = std::env::temp_dir().join(format!("zwinmd-files-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("zinmd-files-{}", std::process::id()));
         std::fs::create_dir_all(root.join("docs/deep")).unwrap();
         std::fs::create_dir_all(root.join("node_modules")).unwrap();
         for file in [

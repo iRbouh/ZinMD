@@ -1,6 +1,6 @@
 //! Startup timing.
 //!
-//! `ZWINMD_BENCH=1` prints how long each stage of startup took, then exits once
+//! `ZINMD_BENCH=1` prints how long each stage of startup took, then exits once
 //! the first frame is on screen. Without it, marks cost one atomic load each.
 
 use std::sync::Mutex;
@@ -14,7 +14,7 @@ static START: Mutex<Option<Instant>> = Mutex::new(None);
 /// Call first thing in `main`.
 pub fn begin() -> Instant {
     let now = Instant::now();
-    if std::env::var_os("ZWINMD_BENCH").is_some() {
+    if std::env::var_os("ZINMD_BENCH").is_some() {
         ENABLED.store(true, Ordering::Relaxed);
         *START.lock().unwrap() = Some(now);
     }
@@ -37,7 +37,7 @@ pub fn warm_up_graphics() {
         unsafe extern "C" {
             fn MTLCreateSystemDefaultDevice() -> *mut std::ffi::c_void;
         }
-        if std::env::var_os("ZWINMD_NO_WARMUP").is_none() {
+        if std::env::var_os("ZINMD_NO_WARMUP").is_none() {
             // The device is deliberately kept: the renderer asks for the same one.
             std::thread::spawn(|| {
                 unsafe { MTLCreateSystemDefaultDevice() };
@@ -46,13 +46,13 @@ pub fn warm_up_graphics() {
     }
 }
 
-/// Say what is going on, when `ZWINMD_TRACE` is set. For checking behaviour
+/// Say what is going on, when `ZINMD_TRACE` is set. For checking behaviour
 /// that cannot be seen from outside, such as requests from the system.
 pub fn trace(message: impl FnOnce() -> String) {
     static ON: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var_os("ZWINMD_TRACE").is_some());
+        std::sync::LazyLock::new(|| std::env::var_os("ZINMD_TRACE").is_some());
     if *ON {
-        eprintln!("zwinmd: {}", message());
+        eprintln!("zinmd: {}", message());
     }
 }
 

@@ -3,8 +3,8 @@
 # changes; the results are kept in the repository. Uses tools that ship with
 # macOS (swift needs the Xcode command line tools).
 #
-#   assets/ZwinMD.icns            the app's icon
-#   assets/ZwinMD-document.icns   the icon Markdown files wear in Finder
+#   assets/ZinMD.icns            the app's icon
+#   assets/ZinMD-document.icns   the icon Markdown files wear in Finder
 #   design/logo/png/              PNG copies, for the README and the web
 set -eu
 cd "$(dirname "$0")/.."
@@ -32,8 +32,8 @@ icns() {
     echo "built assets/$2.icns"
 }
 
-icns app-icon ZwinMD
-icns file-icon ZwinMD-document
+icns app-icon ZinMD
+icns file-icon ZinMD-document
 
 mkdir -p design/logo/png
 for name in app-icon file-icon; do

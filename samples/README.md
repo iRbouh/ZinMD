@@ -1,3 +1,3 @@
-# ZwinMD samples
+# ZinMD samples
 
 Small documents used to try the app.

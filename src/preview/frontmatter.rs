@@ -191,9 +191,9 @@ mod tests {
     #[test]
     fn reads_scalars_and_lists() {
         let meta = parse(
-            "title: \"ZwinMD architecture\"\ntags: [gpui, rust, 'markdown']\nauthor: Ismail\ndate: 2026-11-10\n",
+            "title: \"ZinMD architecture\"\ntags: [gpui, rust, 'markdown']\nauthor: Ismail\ndate: 2026-11-10\n",
         );
-        assert_eq!(meta.title.as_deref(), Some("ZwinMD architecture"));
+        assert_eq!(meta.title.as_deref(), Some("ZinMD architecture"));
         assert_eq!(meta.tags, ["gpui", "rust", "markdown"]);
         assert_eq!(
             meta.fields,

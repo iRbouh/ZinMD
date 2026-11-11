@@ -1,6 +1,6 @@
-//! ZwinMD: a fast native Markdown editor and viewer.
+//! ZinMD: a fast native Markdown editor and viewer.
 //!
-//! Usage: `zwinmd [file.md | folder]`
+//! Usage: `zinmd [file.md | folder]`
 
 // The theme is one large `json!` literal, which expands recursively.
 #![recursion_limit = "512"]
