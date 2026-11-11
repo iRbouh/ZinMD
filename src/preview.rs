@@ -131,6 +131,41 @@ pub fn look_at(subject: Subject, window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(crate::workspace::LookCloser), cx);
 }
 
+/// What the card over a link says of the note, or the heading, it leads to:
+/// the file, what it is called, and its first words.
+pub fn glimpse_card(glimpse: &crate::links::Glimpse, p: &Palette) -> Div {
+    let file = (!glimpse.file.is_empty() && glimpse.file != glimpse.title).then(|| {
+        div()
+            .text_size(px(10.5))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(p.text_tertiary)
+            .child(glimpse.file.clone())
+    });
+    let about = (!glimpse.about.is_empty()).then(|| {
+        div()
+            .text_size(px(12.5))
+            .line_height(px(19.))
+            .text_color(p.text_secondary)
+            .child(glimpse.about.clone())
+    });
+    div()
+        .flex()
+        .flex_col()
+        .w(px(300.))
+        .py(px(6.))
+        .px(px(4.))
+        .gap(px(4.))
+        .children(file)
+        .child(
+            div()
+                .text_size(px(14.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(p.text_primary)
+                .child(glimpse.title.clone()),
+        )
+        .children(about)
+}
+
 /// A small round button that sits on a picture or a diagram while the
 /// pointer is over it.
 pub fn tool(

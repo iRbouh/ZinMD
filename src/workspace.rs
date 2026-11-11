@@ -247,6 +247,9 @@ pub struct Doc {
     stats: Stats,
     /// Which source lines each preview row shows; rebuilt in the background after edits.
     blocks: BlockMap,
+    /// Where the places of the page's text are in the source, when the page
+    /// does not show the source as it is: its wiki links are made links.
+    links: Option<crate::links::Shown>,
     sync: ScrollSync,
     /// What its file looked like when we last read or wrote it, to tell when
     /// someone else changes it; and anything the user should be told about it.
@@ -685,7 +688,11 @@ impl Workspace {
                 .soft_wrap(true)
                 .default_value(text.clone())
         });
-        let preview = cx.new(|cx| TextViewState::markdown(&text, cx));
+        let links = self.page_text(path.as_deref(), &text);
+        let preview = cx.new(|cx| match &links {
+            Some(shown) => TextViewState::markdown(&shown.text, cx),
+            None => TextViewState::markdown(&text, cx),
+        });
         let changes = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.on_edit(&editor, cx);
@@ -708,6 +715,7 @@ impl Workspace {
             saved: text.clone(),
             text,
             blocks: BlockMap::default(),
+            links: links.map(crate::links::Shown::without_text),
             sync: ScrollSync::default(),
             disk,
             notice: None,
@@ -838,11 +846,15 @@ impl Workspace {
             return;
         };
         let text = SharedString::from(editor.read(cx).text().to_string());
+        let links = self.page_text(self.docs[ix].path.clone().as_deref(), &text);
         let doc = &mut self.docs[ix];
         doc.headings = doc::outline(&text);
         doc.stats = Stats::of(&text);
-        doc.preview
-            .update(cx, |preview, cx| preview.set_text(&text, cx));
+        doc.preview.update(cx, |preview, cx| match &links {
+            Some(shown) => preview.set_text(&shown.text, cx),
+            None => preview.set_text(&text, cx),
+        });
+        doc.links = links.map(crate::links::Shown::without_text);
         doc.text = text;
         self.back_up(ix, cx);
         // Wait for a pause in typing: the map is only needed to scroll.
@@ -1156,9 +1168,13 @@ impl Workspace {
     /// Write the open document as a standalone HTML page, where the user chooses.
     pub(super) fn export_html(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.active_doc() else { return };
-        let (text, name) = (doc.text.clone(), doc.name.clone());
-        let folder = doc
-            .path
+        let (text, name, path) = (doc.text.clone(), doc.name.clone(), doc.path.clone());
+        // The page goes out as it is shown: wiki links as links.
+        let text = match self.page_text(path.as_deref(), &text) {
+            Some(shown) => shown.text.into(),
+            None => text,
+        };
+        let folder = path
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
@@ -1271,6 +1287,7 @@ impl Workspace {
                     };
                     startup::trace(|| format!("read {root:?}: {} files", found.len()));
                     this.folders[ix].set_files(found);
+                    this.relink_pages(cx);
                     // The file on show may be in a subfolder that is still shut.
                     let shown = this.active_doc().and_then(|doc| doc.path.clone());
                     if let Some(path) = shown.filter(|path| this.folder_of(path) == Some(ix)) {
@@ -1314,6 +1331,56 @@ impl Workspace {
             .iter()
             .flat_map(|folder| folder.files.iter().cloned())
             .collect()
+    }
+
+    /// The text of a document as its page shows it, when that is not the
+    /// text itself: each wiki link that names a file the app knows is made
+    /// an ordinary link to it. The files it can name are those of the
+    /// panel's folders, those that are open, and those beside the document.
+    fn page_text(&mut self, path: Option<&Path>, text: &str) -> Option<crate::links::Shown> {
+        if !text.contains("[[") {
+            return None;
+        }
+        let folder = path.and_then(Path::parent);
+        let beside = match path {
+            Some(path) if self.folder_of(path).is_none() => self.beside(path),
+            _ => Vec::new(),
+        };
+        let known = crate::links::Known::new(
+            self.folders
+                .iter()
+                .flat_map(|folder| &folder.files)
+                .chain(self.docs.iter().filter_map(|doc| doc.path.as_ref()))
+                .chain(&beside)
+                .map(PathBuf::as_path),
+        );
+        crate::links::linked(text, |name| {
+            let file = known.find(name, folder)?;
+            Some(crate::links::way(folder, file))
+        })
+    }
+
+    /// Make the wiki links of the open pages again: the files they can name
+    /// have changed.
+    fn relink_pages(&mut self, cx: &mut Context<Self>) {
+        for ix in 0..self.docs.len() {
+            if !self.docs[ix].text.contains("[[") {
+                continue;
+            }
+            let (path, text) = (self.docs[ix].path.clone(), self.docs[ix].text.clone());
+            let links = self.page_text(path.as_deref(), &text);
+            let doc = &mut self.docs[ix];
+            // Only a page whose links changed is drawn again.
+            let was = doc.preview.read(cx).rendered_text().source().len();
+            let now = links.as_ref().map_or(text.len(), |shown| shown.text.len());
+            if was != now {
+                doc.preview.update(cx, |preview, cx| match &links {
+                    Some(shown) => preview.set_text(&shown.text, cx),
+                    None => preview.set_text(&text, cx),
+                });
+            }
+            doc.links = links.map(crate::links::Shown::without_text);
+        }
     }
 
     /// Every file a search of the text looks in: the one on show first, so

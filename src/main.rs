@@ -14,6 +14,7 @@ mod assets;
 mod doc;
 mod export;
 mod files;
+mod links;
 mod matching;
 mod motion;
 mod open;

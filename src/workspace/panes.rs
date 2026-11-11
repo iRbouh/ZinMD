@@ -250,6 +250,9 @@ impl Workspace {
                 .map(Path::to_path_buf),
         );
         let (on_task, on_link) = (cx.weak_entity(), cx.weak_entity());
+        // For the card over a link: where its path starts from, and the
+        // text its headings are in.
+        let (beside, own) = (folder.clone(), doc.text.clone());
         let (quiet, palette) = (p.text_tertiary, *p);
         // How big the words are: the page's own size for its width, times
         // what the reader asked for.
@@ -325,8 +328,17 @@ impl Workspace {
                         cx,
                     ))
             })
-            // Over a link: where it leads.
-            .link_tooltip(|url, window, cx| Tooltip::new(url.clone()).build(window, cx))
+            // Over a link: a glimpse of the note or the heading it leads
+            // to, or for anything else, where it leads.
+            .link_tooltip({
+                move |url, window, cx| match crate::links::glimpse(url, beside.as_deref(), &own) {
+                    Some(glimpse) => {
+                        Tooltip::element(move |_, _| preview::glimpse_card(&glimpse, &palette))
+                            .build(window, cx)
+                    }
+                    None => Tooltip::new(url.clone()).build(window, cx),
+                }
+            })
             .on_task_toggle(move |event, window, cx| {
                 on_task
                     .update(cx, |this, cx| {
@@ -408,6 +420,12 @@ impl Workspace {
     ) {
         let Some(doc) = self.doc_ix(id).map(|ix| &self.docs[ix]) else {
             return;
+        };
+        // The page says where the box is in its own text, which is not the
+        // source where wiki links were made links.
+        let marker = match &doc.links {
+            Some(shown) => shown.in_source(marker.start)..shown.in_source(marker.end),
+            None => marker,
         };
         // The preview can be a keystroke behind the editor: only ever replace a real task marker.
         if !matches!(doc.text.get(marker.clone()), Some("[ ]" | "[x]" | "[X]")) {

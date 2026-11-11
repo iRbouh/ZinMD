@@ -11,6 +11,7 @@
 //! the page when its end is reached.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::transition;
@@ -45,10 +46,14 @@ pub(super) struct Trail {
     /// Nothing more is left on the trail until the next frame: one move
     /// leaves one place, however many steps it is made of.
     held: bool,
-    /// The Markdown files in the folder of a document that is in no folder
-    /// of the panel, read once for that document.
-    beside: Option<(usize, Vec<PathBuf>)>,
+    /// The Markdown files of a folder that is not in the panel, and when
+    /// they were read from disk.
+    beside: Option<(PathBuf, Instant, Vec<PathBuf>)>,
 }
+
+/// How long what was read of a folder that is not in the panel is good for:
+/// long enough that typing does not read it at every key.
+const BESIDE_KEPT: Duration = Duration::from_secs(2);
 
 impl Trail {
     /// Called as each frame is drawn: the move that was being made is over.
@@ -173,27 +178,35 @@ impl Workspace {
 
     // ------------------------------------------------------- files beside
 
+    /// The Markdown files in the folder `file` is in, in the order the panel
+    /// lists them. Those of a folder of the panel are known; any other
+    /// folder is read from disk, and what was read is kept a moment.
+    pub(super) fn beside(&mut self, file: &Path) -> Vec<PathBuf> {
+        if let Some(folder) = self.folder_of(file) {
+            return files::beside(file, Some(&self.folders[folder].files));
+        }
+        let Some(dir) = file.parent() else {
+            return Vec::new();
+        };
+        match &self.trail.beside {
+            Some((read, when, beside)) if read == dir && when.elapsed() < BESIDE_KEPT => {
+                beside.clone()
+            }
+            _ => {
+                let beside = files::beside(file, None);
+                self.trail.beside = Some((dir.to_path_buf(), Instant::now(), beside.clone()));
+                beside
+            }
+        }
+    }
+
     /// The file before the one on show and the one after, among the Markdown
-    /// files of its folder, in the order the panel lists them.
+    /// files of its folder.
     pub(super) fn files_beside(&mut self) -> (Option<PathBuf>, Option<PathBuf>) {
-        let Some((id, path)) = self
-            .active_doc()
-            .and_then(|doc| Some((doc.id, doc.path.clone()?)))
-        else {
+        let Some(path) = self.active_doc().and_then(|doc| doc.path.clone()) else {
             return (None, None);
         };
-        let beside = match self.folder_of(&path) {
-            Some(folder) => files::beside(&path, Some(&self.folders[folder].files)),
-            // A file open on its own: its folder is read once.
-            None => match &self.trail.beside {
-                Some((doc, beside)) if *doc == id => beside.clone(),
-                _ => {
-                    let beside = files::beside(&path, None);
-                    self.trail.beside = Some((id, beside.clone()));
-                    beside
-                }
-            },
-        };
+        let beside = self.beside(&path);
         let Some(at) = beside.iter().position(|file| *file == path) else {
             return (None, None);
         };

@@ -39,6 +39,10 @@ A file opens as a page to read, in a window the shape of a sheet of paper.
   place with the words marked on the page
 - Search that forgives: accents and case do not count, words are found in
   any order, and a slip of the finger still finds the word you meant
+- Wiki links: `[[Another note]]`, `[[note|other words]]` and
+  `[[note#heading]]` are links to the note of that name
+- A glimpse of where a link leads: rest the pointer on a link to a note or
+  a heading, and a card says what is there
 - Back and forward, as in a browser: follow a link, a heading or a search
   result, and one key takes you back to where you were
 - The files before and after the one you read, as two quiet links at the
