@@ -742,8 +742,18 @@ impl Workspace {
         self.push_doc(None, "Untitled.md".into(), String::new(), window, cx);
     }
 
-    /// A new document is for writing: it opens in the editor.
+    /// A new document is for writing: it opens in the editor, which may be
+    /// another window than this one.
     fn new_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((desk, workspace)) = papers::other_desk(window.window_handle(), cx) {
+            return cx.defer(move |cx| {
+                desk.update(cx, |_, window, cx| {
+                    workspace.update(cx, |desk, cx| desk.new_document(window, cx));
+                    window.activate_window();
+                })
+                .ok();
+            });
+        }
         if !self.active_doc().is_some_and(Doc::blank) {
             self.open_untitled(window, cx);
         }
@@ -1261,6 +1271,16 @@ impl Workspace {
     }
 
     fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // What is not saved is at the desk: it is asked about there.
+        if let Some((desk, workspace)) = papers::other_desk(window.window_handle(), cx) {
+            return cx.defer(move |cx| {
+                desk.update(cx, |_, window, cx| {
+                    window.activate_window();
+                    workspace.update(cx, |desk, cx| desk.quit(window, cx));
+                })
+                .ok();
+            });
+        }
         let confirmed = self.confirm_closing_all(window, cx);
         cx.spawn(async move |this, cx| {
             if confirmed.await {
@@ -1588,6 +1608,13 @@ impl Workspace {
         if self.mode == mode {
             return;
         }
+        // One window is the editor's. With another one already that, the
+        // file of this paper is opened there, and this stays a paper.
+        if mode == Mode::Edit
+            && let Some((desk, workspace)) = papers::other_desk(window.window_handle(), cx)
+        {
+            return self.edit_at_desk(desk, workspace, cx);
+        }
         if !self.reshaping {
             let here = bounds_of(window);
             match self.mode {
@@ -1614,6 +1641,51 @@ impl Workspace {
         self.reshape_window(window, cx);
         self.focus_document(window, cx);
         cx.notify();
+    }
+
+    /// Whether `path` is open here with changes that are not saved.
+    pub(super) fn has_unsaved(&self, path: &Path) -> bool {
+        self.docs
+            .iter()
+            .any(|doc| doc.path.as_deref() == Some(path) && doc.dirty())
+    }
+
+    /// Whether this window is the editor's: it is editing, or has changes
+    /// that are not saved. There is one such window at a time.
+    pub(super) fn holds_changes(&self) -> bool {
+        self.mode == Mode::Edit || self.docs.iter().any(Doc::dirty)
+    }
+
+    /// Open the file of this paper in the editor, which is another window,
+    /// at the line this paper is at, and bring that window to the front.
+    fn edit_at_desk(
+        &mut self,
+        desk: AnyWindowHandle,
+        workspace: Entity<Workspace>,
+        cx: &mut Context<Self>,
+    ) {
+        let doc = self.active_doc().filter(|doc| !doc.blank());
+        let path = doc.and_then(|doc| doc.path.clone());
+        let line = doc.and_then(|doc| {
+            let list = doc.preview.read(cx).list_state().clone();
+            crate::sync::preview_top_line(&list, &doc.blocks)
+        });
+        // Once this paper has finished what it is doing.
+        cx.defer(move |cx| {
+            desk.update(cx, |_, window, cx| {
+                workspace.update(cx, |desk, cx| {
+                    if let Some(path) = path {
+                        desk.open(path, window, cx);
+                    }
+                    desk.set_mode(Mode::Edit, window, cx);
+                    if let Some(line) = line {
+                        desk.jump_to_line(line as u32, window, cx);
+                    }
+                });
+                window.activate_window();
+            })
+            .ok();
+        });
     }
 
     fn toggle_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1838,6 +1910,26 @@ impl Workspace {
             "link" => self.follow_link(argument, false, window, cx),
             // `beside:<path>` opens a file as a paper of its own; with no
             // path, an empty one.
+            // `paper:<step>` runs a step in the other paper used last,
+            // rather than in the first window: `paper:mode:edit`.
+            "paper" => {
+                let here = window.window_handle();
+                let other = papers::open_papers(cx)
+                    .into_iter()
+                    .find(|(paper, _)| *paper != here);
+                if let Some((paper, workspace)) = other {
+                    let step = argument.to_string();
+                    cx.defer(move |cx| {
+                        paper
+                            .update(cx, |_, window, cx| {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.debug_step(&step, window, cx)
+                                });
+                            })
+                            .ok();
+                    });
+                }
+            }
             // Bring up the switcher between the papers.
             // `switch:held` as if Control were held, which a scripted
             // run has no way of doing: it is found let go of at once.

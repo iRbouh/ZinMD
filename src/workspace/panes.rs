@@ -423,6 +423,18 @@ impl Workspace {
         let Some(doc) = self.doc_ix(id).map(|ix| &self.docs[ix]) else {
             return;
         };
+        // The file is being changed at the desk, in another window: a tick
+        // made here would be written over what is there, or lost.
+        let (path, clean) = (doc.path.clone(), !doc.dirty());
+        if let Some(path) = &path
+            && let Some((_, desk)) = super::papers::other_desk(window.window_handle(), cx)
+            && desk.read(cx).has_unsaved(path)
+        {
+            return;
+        }
+        let Some(doc) = self.doc_ix(id).map(|ix| &self.docs[ix]) else {
+            return;
+        };
         // The page says where the box is in its own text, which is not the
         // source where wiki links were made links.
         let marker = match &doc.links {
@@ -440,6 +452,11 @@ impl Workspace {
             editor.replace(if checked { "[x]" } else { "[ ]" }, window, cx);
             editor.set_selected_range(selection, cx);
         });
+        // A paper holds nothing that is not saved: a box ticked while
+        // reading a file with nothing else unsaved is written down at once.
+        if self.mode == super::Mode::Read && clean && path.is_some() {
+            self.save_doc(id, false, window, cx).detach();
+        }
     }
 
     /// A link was clicked in the preview. With `beside`, a note it leads to

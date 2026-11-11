@@ -5,6 +5,13 @@
 //! still turns the page of the window it is made in. The papers are the
 //! user's to place: side by side, overlapping, on another screen.
 //!
+//! Papers are for reading. One window at a time is the editor's: the desk.
+//! It is the only one that holds changes that are not saved, so there is
+//! one place to ask about them, and no file is ever being changed in two
+//! windows at once. Asking for the editor in a paper opens its file at the
+//! desk, where the paper is at; with no desk yet, the paper becomes it.
+//! Papers that show a file follow it when it is saved.
+//!
 //! The app keeps the papers that are open in the order they were last used,
 //! which is the order the switcher shows them in (see [`super::switcher`]),
 //! and says in the session where each one was, so that they come back.
@@ -158,6 +165,20 @@ pub(super) fn open_papers(cx: &mut App) -> Vec<(AnyWindowHandle, Entity<Workspac
         .iter()
         .filter_map(|paper| Some((paper.window, paper.workspace.upgrade()?)))
         .collect()
+}
+
+/// The desk, when it is another window than `here`: the one that is the
+/// editor's, or that has changes that are not saved.
+pub(super) fn other_desk(
+    here: AnyWindowHandle,
+    cx: &mut App,
+) -> Option<(AnyWindowHandle, Entity<Workspace>)> {
+    open_papers(cx)
+        .into_iter()
+        // This paper is in the middle of being asked something, and cannot
+        // be read from outside: it is not looked at.
+        .filter(|(window, _)| *window != here)
+        .find(|(_, workspace)| workspace.read(cx).holds_changes())
 }
 
 /// How many papers are open.
