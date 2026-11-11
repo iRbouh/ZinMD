@@ -89,6 +89,22 @@ if (!still && window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
   hero.addEventListener("pointerleave", () => lean(0, 0));
 }
 
+// ---- the line for Terminal can be copied with a click
+document.querySelectorAll("[data-copy]").forEach((button) => {
+  if (!navigator.clipboard) return;
+  button.hidden = false;
+  button.addEventListener("click", () => {
+    navigator.clipboard.writeText(button.dataset.copy).then(() => {
+      button.textContent = "Copied";
+      button.classList.add("done");
+      setTimeout(() => {
+        button.textContent = "Copy";
+        button.classList.remove("done");
+      }, 1800);
+    });
+  });
+});
+
 // ---- the rest of the page comes in as it is scrolled to
 const hidden = document.querySelectorAll(".reveal");
 if (still || !("IntersectionObserver" in window)) {

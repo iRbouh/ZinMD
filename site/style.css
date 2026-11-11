@@ -942,8 +942,98 @@ h2 {
   text-underline-offset: 3px;
 }
 
+/* The line for Terminal, under the three cards. */
+.terminal {
+  display: grid;
+  /* One column no wider than the page, however long the line in it. */
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 16px;
+  margin-top: 48px;
+  text-align: center;
+}
+
+.terminal > p {
+  max-width: 560px;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--soft);
+}
+
+.terminal b {
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: 100%;
+  padding: 8px 8px 8px 20px;
+  border-radius: 16px;
+  background: var(--ink);
+  box-shadow: 0 16px 34px rgb(30 29 26 / 0.2), inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
+.cmd code {
+  min-width: 0;
+  overflow-x: auto;
+  padding: 12px 0;
+  white-space: nowrap;
+  scrollbar-width: none;
+  font: 500 14.5px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--cream);
+}
+
+.cmd code::-webkit-scrollbar {
+  display: none;
+}
+
+.cmd code i {
+  margin-right: 12px;
+  font-style: normal;
+  color: var(--mustard-light);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.cmd button {
+  flex: none;
+  min-width: 76px;
+  height: 38px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, var(--mustard-light), var(--mustard));
+  color: var(--ink);
+  font: 650 14px/1 "Inter", sans-serif;
+  cursor: pointer;
+  transition: transform 0.2s var(--ease), background 0.2s;
+}
+
+.cmd button:hover {
+  transform: translateY(-1px);
+}
+
+.cmd button.done {
+  background: #fff;
+}
+
+.terminal .fine {
+  font-size: 13.5px;
+  color: var(--quiet);
+}
+
+.fine a {
+  color: var(--mustard-text);
+  text-decoration: underline;
+  text-decoration-color: var(--mustard-light);
+  text-underline-offset: 3px;
+}
+
 .unsigned {
-  margin-top: 40px;
+  margin-top: 36px;
   text-align: center;
   font-size: 14px;
   color: var(--quiet);

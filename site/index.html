@@ -188,7 +188,15 @@
           <p class="note">The .deb and .rpm offer ZinMD for your Markdown files.</p>
         </article>
       </div>
-      <p class="unsigned reveal">ZinMD is not signed yet, so macOS and Windows ask before they open it the first time. <a href="https://github.com/iRbouh/ZinMD#install">How to open it</a>.</p>
+      <div class="terminal reveal">
+        <p><b>On a Mac, one line does it.</b> Paste this in Terminal: it installs ZinMD, and macOS opens it without asking first.</p>
+        <div class="cmd">
+          <code><i aria-hidden="true">$</i>curl -fsSL https://irbouh.github.io/ZinMD/install.sh | sh</code>
+          <button type="button" data-copy="curl -fsSL https://irbouh.github.io/ZinMD/install.sh | sh" hidden>Copy</button>
+        </div>
+        <p class="fine">It gets the same app from GitHub, checks it, and puts it in Applications. <a href="install.sh">Read the script</a>.</p>
+      </div>
+      <p class="unsigned reveal">ZinMD is not signed yet, so macOS and Windows ask before they open a downloaded copy the first time. <a href="https://github.com/iRbouh/ZinMD#install">How to open it</a>.</p>
     </div>
   </section>
 </main>

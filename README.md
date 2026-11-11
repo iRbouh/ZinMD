@@ -60,10 +60,22 @@ or let the [website](https://irbouh.github.io/ZinMD/#download) pick it for you.
 The installed versions offer ZinMD for Markdown files, so a `.md` file can be
 opened with it from the file manager.
 
+On a Mac, one line in Terminal does it all:
+
+```sh
+curl -fsSL https://irbouh.github.io/ZinMD/install.sh | sh
+```
+
+It gets the app from the latest release, checks it against the sums
+published with the release, and puts it in Applications.
+[Read the script](site/install.sh) first if you like.
+
 > [!NOTE]
-> ZinMD is not signed yet, so macOS and Windows ask before they open it the
-> first time. On macOS, choose **Open Anyway** under System Settings, Privacy &
-> Security. On Windows, choose **More info**, then **Run anyway**.
+> ZinMD is not signed yet, so macOS and Windows ask before they open a
+> downloaded copy the first time. On macOS, choose **Open Anyway** under
+> System Settings, Privacy & Security. On Windows, choose **More info**, then
+> **Run anyway**. A copy installed with the line above is not asked about:
+> macOS only marks what a browser downloads.
 
 ## What it does
 
