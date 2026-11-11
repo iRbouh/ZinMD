@@ -48,7 +48,7 @@ const PLATE: Pixels = px(8.);
 const ACROSS: usize = 7;
 const BETWEEN: Pixels = px(10.);
 /// Room around the bar, in a window that is otherwise clear, for its shadow.
-const SHADE: Pixels = px(64.);
+const SHADE: Pixels = px(72.);
 
 /// How big the bar is for `count` papers.
 fn bar_size(count: usize) -> Size<Pixels> {
@@ -372,9 +372,12 @@ fn open_switcher(
         .open_window(options, |window, cx| {
             let switcher = cx.new(|cx| Switcher::new(briefs, from, held, window, cx));
             made = Some(switcher.clone());
-            // What a window is drawn on is filled with the colour of the
-            // theme, which would be a box round the bar: a window with a
-            // window in it. This one is left clear.
+            // Two things would make a box round the bar, a window with a
+            // window in it. The system draws a shadow and an edge round the
+            // whole window, and what a window is drawn on is filled with
+            // the colour of the theme. Neither is wanted here.
+            let keys = super::frame::bare(window);
+            debug_assert!(keys, "the switcher lost the keys with its frame");
             cx.new(|cx| {
                 gpui_kit::base::Root::new(switcher, window, cx).bg(gpui_kit::transparent_black())
             })
@@ -659,15 +662,16 @@ impl Switcher {
             }));
         let name = div()
             .flex()
-            .items_center()
             .justify_center()
             .w(WIDE)
             .h(UNDER)
+            .pt(px(9.))
             .child(
                 div()
                     .max_w(WIDE)
                     .truncate()
                     .text_size(px(11.))
+                    .line_height(px(14.))
                     .map(|name| match chosen {
                         true => name
                             .font_weight(FontWeight::SEMIBOLD)
@@ -744,12 +748,36 @@ impl Render for Switcher {
             .w(size.width)
             .h(size.height)
             .rounded(px(20.))
-            .border_1()
-            .border_color(p.border_raised)
             .bg(p.surface_raised)
-            .shadow_lg()
+            // The shadow of the drawing: a wide soft one, and a close one.
+            .shadow(vec![
+                BoxShadow {
+                    color: black().opacity(0.25),
+                    offset: point(px(0.), px(18.)),
+                    blur_radius: px(48.),
+                    spread_radius: px(0.),
+                    inset: false,
+                },
+                BoxShadow {
+                    color: black().opacity(0.1),
+                    offset: point(px(0.), px(2.)),
+                    blur_radius: px(6.),
+                    spread_radius: px(0.),
+                    inset: false,
+                },
+            ])
             .child(plate)
             .children(pages)
+            // Its edge is drawn over it, not round it: a border would move
+            // all that is in the bar a point down and to the right.
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(20.))
+                    .border_1()
+                    .border_color(p.border_subtle),
+            )
             // It comes up with a short fade, settling a few points down.
             .with_animation(
                 "switcher-arrives",

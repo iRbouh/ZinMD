@@ -186,6 +186,14 @@ pub(super) fn side_by_side(display: Frame, count: usize) -> Vec<Frame> {
         .collect()
 }
 
+/// Leave a clear window with nothing in it but what we draw. The system
+/// gives every window a frame, a shadow and a thin edge, round the whole of
+/// it: for a window that is clear but for one shape, a faint box about the
+/// shape. Says whether the keys are still taken as they were.
+pub(super) fn bare(window: &Window) -> bool {
+    native::Native::of(window).is_none_or(|native| native.bare())
+}
+
 /// Where a window is, and the part of its display that windows may use, in
 /// the system's terms. `None` where the system is not asked.
 pub(super) fn frames_of(window: &Window) -> Option<(Frame, Frame)> {
@@ -374,6 +382,28 @@ mod native {
             }
         }
 
+        /// Take away all that the system draws of the window: the frame a
+        /// window with a title bar has, the thin edge and the shadow. The
+        /// keys stay with what had them. Says whether they did.
+        pub fn bare(self) -> bool {
+            // A title bar, and what is ours drawn under it: the two that
+            // give a window its frame.
+            const FRAMED: usize = 1 | 1 << 15;
+            // SAFETY: the style is a set of bits and the shadow a flag, as
+            // the messages declare; what takes the keys is a view of this
+            // window, alive as long as it is.
+            unsafe {
+                let keys: *mut AnyObject = msg_send![self.0, firstResponder];
+                let style: usize = msg_send![self.0, styleMask];
+                let _: () = msg_send![self.0, setStyleMask: style & !FRAMED];
+                // A change of style can leave the keys with the window itself.
+                let _: bool = msg_send![self.0, makeFirstResponder: keys];
+                let _: () = msg_send![self.0, setHasShadow: false];
+                let now: *mut AnyObject = msg_send![self.0, firstResponder];
+                now == keys
+            }
+        }
+
         /// Hold the window to `height / width`, or let it be any shape.
         pub fn hold_shape(self, tall: Option<f64>) {
             // SAFETY: each message takes one size. Setting the increments is
@@ -419,6 +449,9 @@ mod native {
             None
         }
         pub fn set_frame(self, _: Frame) {}
+        pub fn bare(self) -> bool {
+            true
+        }
         pub fn hold_shape(self, _: Option<f64>) {}
     }
 }
