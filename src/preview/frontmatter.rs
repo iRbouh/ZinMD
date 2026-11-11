@@ -11,6 +11,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::pts;
 use crate::theme::{ActivePalette as _, size};
 
 /// What we read out of a front matter block.
@@ -136,7 +137,7 @@ impl MarkdownPlugin for FrontMatter {
 
         let title = meta.title.clone().filter(|_| *show_title).map(|title| {
             div()
-                .text_size(size::FONT_H1)
+                .text_size(pts(size::FONT_H1.into()))
                 .font_weight(FontWeight::BOLD)
                 .line_height(relative(1.25))
                 .child(title)
@@ -144,16 +145,16 @@ impl MarkdownPlugin for FrontMatter {
         let tags = (!meta.tags.is_empty()).then(|| {
             h_flex()
                 .flex_wrap()
-                .gap(px(6.))
+                .gap(pts(6.))
                 .children(meta.tags.iter().map(|tag| {
                     div()
-                        .px(px(8.))
+                        .px(pts(8.))
                         .rounded_full()
                         .border_1()
                         .border_color(p.border_subtle)
                         .bg(p.surface_sunken)
-                        .text_size(px(12.))
-                        .line_height(px(20.))
+                        .text_size(pts(12.))
+                        .line_height(pts(20.))
                         .text_color(p.text_secondary)
                         .child(tag.clone())
                 }))
@@ -161,13 +162,13 @@ impl MarkdownPlugin for FrontMatter {
         let fields = (!meta.fields.is_empty()).then(|| {
             h_flex()
                 .flex_wrap()
-                .gap_x(px(16.))
-                .gap_y(px(2.))
-                .text_size(px(12.))
-                .line_height(px(18.))
+                .gap_x(pts(16.))
+                .gap_y(pts(2.))
+                .text_size(pts(12.))
+                .line_height(pts(18.))
                 .children(meta.fields.iter().map(|(key, value)| {
                     h_flex()
-                        .gap(px(6.))
+                        .gap(pts(6.))
                         .child(div().text_color(p.text_tertiary).child(key.clone()))
                         .child(div().text_color(p.text_secondary).child(value.clone()))
                 }))
@@ -176,8 +177,8 @@ impl MarkdownPlugin for FrontMatter {
         let empty = title.is_none() && tags.is_none() && fields.is_none();
         v_flex()
             .w_full()
-            .gap(px(10.))
-            .when(!empty, |header| header.pb(px(4.)))
+            .gap(pts(10.))
+            .when(!empty, |header| header.pb(pts(4.)))
             .children(title)
             .children(tags)
             .children(fields)

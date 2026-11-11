@@ -9,6 +9,7 @@ use gpui_kit::component::text::MarkdownExtensions;
 use gpui_kit::component::{Icon, h_flex};
 use gpui_kit::*;
 
+use super::pts;
 use crate::theme::{ActivePalette as _, Palette, size};
 
 #[derive(Clone, Copy)]
@@ -96,31 +97,33 @@ fn surface(kind: &Kind, p: &Palette) -> Div {
         Tone::Neutral => (p.border_strong, p.surface_sunken, p.text_secondary),
     };
 
+    // Every size here is in points of the page, so that a page drawn small
+    // has small callouts.
     div()
         .relative()
         .w_full()
-        .pl(px(26.))
-        .pr(px(16.))
-        .py(px(12.))
-        .rounded(size::RADIUS_MD)
+        .pl(pts(26.))
+        .pr(pts(16.))
+        .py(pts(12.))
+        .rounded(pts(size::RADIUS_MD.into()))
         .bg(tint)
         .child(
             div()
                 .absolute()
-                .left(px(12.))
-                .top(px(12.))
-                .bottom(px(12.))
-                .w(px(3.))
+                .left(pts(12.))
+                .top(pts(12.))
+                .bottom(pts(12.))
+                .w(pts(3.))
                 .rounded_full()
                 .bg(bar),
         )
         .child(
             h_flex()
-                .gap(px(6.))
-                .text_size(size::FONT_UI)
+                .gap(pts(6.))
+                .text_size(pts(size::FONT_UI.into()))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(title)
-                .child(Icon::new((kind.icon)()).size(px(14.)))
+                .child(Icon::new((kind.icon)()).size(pts(14.)))
                 .child(kind.title),
         )
 }

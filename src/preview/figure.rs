@@ -19,7 +19,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{Shown, Subject, look_at, tool};
+use super::{Shown, Subject, look_at, pts, tool};
 use crate::theme::{ActivePalette as _, size};
 
 /// What `parse` keeps about a picture.
@@ -161,7 +161,7 @@ impl MarkdownPlugin for Figure {
                             Some(natural) => {
                                 let (wide, tall) =
                                     (natural.width.0 as f32, natural.height.0 as f32);
-                                figure.w_full().max_w(px(wide)).child(
+                                figure.w_full().max_w(pts(wide)).child(
                                     div()
                                         .w_full()
                                         .aspect_ratio(wide / tall)

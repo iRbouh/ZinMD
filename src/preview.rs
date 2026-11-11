@@ -267,6 +267,12 @@ fn decode_data_url(link: &str) -> Option<Image> {
     Some(Image::from_bytes(format, bytes))
 }
 
+/// A length that is `points` long on a page of the usual size, and shorter
+/// with everything else where a page is drawn small, as the switcher does.
+pub(crate) fn pts(points: f32) -> Rems {
+    rems(points / 16.)
+}
+
 /// The size of the words of a page whose text column is `sheet` wide.
 ///
 /// A line is easy to read at 60 to 85 characters. The column is the shape of
@@ -288,8 +294,18 @@ pub fn body_size(sheet: Option<Pixels>, scale: f32) -> Pixels {
 /// proportions at any size: a heading has more room above it than below, the
 /// more the higher its level, and paragraphs sit a little under a line apart.
 pub fn style(p: &Palette, body: Pixels, dark: bool) -> TextViewStyle {
+    style_at(p, body, dark, px(16.))
+}
+
+/// The same, where the measure sizes are counted in, the rem, is `rem`
+/// rather than the usual 16: a page drawn small, with that measure made
+/// small too, keeps the same gaps for the size of its words.
+pub fn style_at(p: &Palette, body: Pixels, dark: bool, rem: Pixels) -> TextViewStyle {
+    // What is not counted in words keeps its size for a page of the usual
+    // measure, and is as much smaller as the measure is.
+    let small = rem / px(16.);
     let radius = |mut style: StyleRefinement| {
-        let corner: AbsoluteLength = size::RADIUS_MD.into();
+        let corner: AbsoluteLength = (size::RADIUS_MD * small).into();
         style.corner_radii.top_left = Some(corner);
         style.corner_radii.top_right = Some(corner);
         style.corner_radii.bottom_left = Some(corner);
@@ -301,7 +317,7 @@ pub fn style(p: &Palette, body: Pixels, dark: bool) -> TextViewStyle {
         ..Default::default()
     };
     // The kit measures gaps in rems, which are 16 px whatever the text size.
-    let lines = |of_body: f32| rems(f32::from(body) * of_body / 16.);
+    let lines = |of_body: f32| rems(f32::from(body) * of_body / f32::from(rem));
     TextViewStyle::default()
         .with_foreground(p.text_primary)
         .with_muted_foreground(p.text_secondary)
@@ -335,6 +351,7 @@ pub fn style(p: &Palette, body: Pixels, dark: bool) -> TextViewStyle {
             StyleRefinement::default()
                 .text_size(body * 0.87)
                 .px(body * 1.1)
+                .pt(px(14.) * small)
                 .pb(body * 0.9),
         ))
         // Table rows sit on the page itself; only the header row is tinted.

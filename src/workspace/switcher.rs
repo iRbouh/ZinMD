@@ -1,51 +1,147 @@
-//! The switcher: every paper, small, in the middle of the screen.
+//! The switcher: every paper, small, in one slim bar.
 //!
-//! It is drawn to the design on the "Windows" page of `design/zinMD-UI`.
-//! Hold Control and press Tab: a small window comes up above the papers,
-//! with one small page for each, the one used last first. Each is the page
-//! itself, drawn small: what the file shows where it was left, then its
-//! name and how far it has been read. Tab moves the ring from one to the
-//! next, and letting go of Control brings that paper to the front. So one
-//! quick Control Tab still goes back to the paper read before this one.
+//! It is drawn to frame 5 of the "Windows" page of `design/zinMD-UI`. Hold
+//! Control and press Tab: a bar comes up in the middle of the screen, over
+//! the papers, which stay as they are. In it there is one small page for
+//! each paper, the one used last first. Each is the page itself, drawn
+//! small: what the file shows where it was left, with its name under it
+//! and a thin line along its foot for how far it has been read. The paper
+//! that will come forward has a soft plate under it, which glides from
+//! page to page as Tab is pressed. Letting go of Control brings that paper
+//! to the front, so one quick Control Tab still goes back to the paper
+//! read before.
 //!
-//! The arrows move the ring too, Return or a click brings a paper forward,
-//! W closes one, and Escape goes back to the paper it was opened from.
+//! The bar is all there is of the switcher: nothing is drawn around it.
+//!
+//! The arrows move the plate too, Return or a click brings a paper
+//! forward, W closes one, and Escape goes back to the paper it was opened
+//! from.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::text::TextView;
+use gpui_kit::base::transition;
 use gpui_kit::component::text::TextViewState;
-use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::menu::key_cap;
 use super::{LastFile, Workspace, papers};
-use crate::preview;
-use crate::theme::{ActivePalette as _, Palette, size};
+use crate::theme::{ActivePalette as _, Palette};
+use crate::{motion, preview};
 
 /// How wide and tall a small page is, the room between two, and around
-/// them all.
-const WIDE: Pixels = px(176.);
-const TALL: Pixels = px(236.);
-const GAP: Pixels = px(28.);
-const PAD: Pixels = px(36.);
-/// What is under a small page: the line for how far it is read, its name.
-const UNDER: Pixels = px(46.);
-/// The row of keys at the foot.
-const KEYS: Pixels = px(52.);
-/// How many small pages there are to a row.
-const ACROSS: usize = 5;
-/// Room around the panel, in a window that is otherwise clear, for its shadow.
-const SHADE: Pixels = px(56.);
+/// them all in the bar.
+const WIDE: Pixels = px(112.);
+const TALL: Pixels = px(148.);
+const GAP: Pixels = px(14.);
+const PAD: Pixels = px(16.);
+/// What is under a small page: its name.
+const UNDER: Pixels = px(26.);
+/// How far a small page goes on past the edge of its sheet, unseen.
+const BEYOND: Pixels = px(20.);
+/// How far the plate under the chosen page reaches past it.
+const PLATE: Pixels = px(8.);
+/// How many small pages there are to a row, and the room between two rows.
+const ACROSS: usize = 7;
+const BETWEEN: Pixels = px(10.);
+/// Room around the bar, in a window that is otherwise clear, for its shadow.
+const SHADE: Pixels = px(64.);
+
+/// How big the bar is for `count` papers.
+fn bar_size(count: usize) -> Size<Pixels> {
+    let across = count.clamp(1, ACROSS);
+    let rows = count.div_ceil(ACROSS).max(1);
+    size(
+        PAD * 2. + WIDE * across as f32 + GAP * (across - 1) as f32,
+        PAD * 2. - px(6.) + (TALL + UNDER) * rows as f32 + BETWEEN * (rows - 1) as f32,
+    )
+}
+
+/// Where in the bar the small page of the paper numbered `at` is.
+fn place_of(at: usize) -> Point<Pixels> {
+    let (along, down) = (at % ACROSS, at / ACROSS);
+    point(
+        PAD + (WIDE + GAP) * along as f32,
+        PAD + (TALL + UNDER + BETWEEN) * down as f32,
+    )
+}
+
+/// A page drawn small. Much of what a page is made of is sized by the
+/// measure all sizes are counted in, the rem: the box of a task, the room
+/// in a table, the name of a language over its code. Drawn inside this,
+/// that measure is as many times smaller as the page is, so all of it
+/// shrinks with the words.
+struct Small {
+    rem: Pixels,
+    page: AnyElement,
+}
+
+impl IntoElement for Small {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Small {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let rem = self.rem;
+        let layout = window.with_rem_size(Some(rem), |window| self.page.request_layout(window, cx));
+        (layout, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let rem = self.rem;
+        window.with_rem_size(Some(rem), |window| self.page.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let rem = self.rem;
+        window.with_rem_size(Some(rem), |window| self.page.paint(window, cx));
+    }
+}
 
 /// What a paper says of itself, for its small page.
 pub(super) struct Brief {
     pub name: SharedString,
-    /// The folder the file is in.
-    pub way: SharedString,
     /// How far it has been read, 0 to 1, once it has been read at all.
     pub read: Option<f32>,
     /// The text its page shows, and the folder its pictures are named from.
@@ -93,15 +189,9 @@ impl Workspace {
     /// What this paper says of itself to the switcher.
     pub(super) fn brief(&self, frame: [f32; 4], cx: &App) -> Option<Brief> {
         let doc = self.active_doc()?;
-        let (name, way) = match &doc.path {
-            Some(path) => (
-                crate::files::display_name(path),
-                path.parent()
-                    .and_then(|folder| folder.file_name())
-                    .map(|folder| folder.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            ),
-            None => (doc.name.to_string(), String::new()),
+        let name = match &doc.path {
+            Some(path) => crate::files::display_name(path),
+            None => doc.name.to_string(),
         };
         // A paper in the editor's wide window is shown as the page it reads as.
         let page = match self.mode {
@@ -112,7 +202,6 @@ impl Workspace {
         let scale = cx.global::<crate::settings::Settings>().reading_scale;
         Some(Brief {
             name: name.into(),
-            way: way.into(),
             read: doc
                 .path
                 .as_deref()
@@ -261,13 +350,10 @@ fn open_switcher(
     display: Option<DisplayId>,
     cx: &mut App,
 ) {
-    let across = briefs.len().min(ACROSS);
-    let rows = briefs.len().div_ceil(ACROSS);
-    let panel = size(
-        PAD * 2. + WIDE * across as f32 + GAP * (across - 1) as f32,
-        PAD + (TALL + UNDER) * rows as f32 + GAP * (rows - 1) as f32 + KEYS,
-    );
-    let room = size(panel.width + SHADE * 2., panel.height + SHADE * 2.);
+    // The window is as big as the bar and its shadow, in the middle of the
+    // display, and clear: the bar is all that is seen of it.
+    let bar = bar_size(briefs.len());
+    let room = size(bar.width + SHADE * 2., bar.height + SHADE * 2.);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(display, room, cx))),
         titlebar: None,
@@ -281,9 +367,22 @@ fn open_switcher(
         window_background: WindowBackgroundAppearance::Transparent,
         ..Default::default()
     };
-    let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| Switcher::new(briefs, from, held, window, cx))
-    });
+    let mut made = None;
+    let opened = cx
+        .open_window(options, |window, cx| {
+            let switcher = cx.new(|cx| Switcher::new(briefs, from, held, window, cx));
+            made = Some(switcher.clone());
+            // What a window is drawn on is filled with the colour of the
+            // theme, which would be a box round the bar: a window with a
+            // window in it. This one is left clear.
+            cx.new(|cx| {
+                gpui_kit::base::Root::new(switcher, window, cx).bg(gpui_kit::transparent_black())
+            })
+        })
+        .ok()
+        .map(AnyWindowHandle::from)
+        .zip(made)
+        .ok_or(());
     if let Ok((window, switcher)) = opened {
         papers::switcher_opened(window, switcher.downgrade(), cx);
         window
@@ -458,8 +557,15 @@ impl Switcher {
         }
     }
 
-    /// One small page, with what is under it.
-    fn render_page(&mut self, at: usize, p: &Palette, dark: bool, cx: &mut Context<Self>) -> Div {
+    /// One small page, with its name under it, at its place in the bar.
+    fn render_page(
+        &mut self,
+        at: usize,
+        p: &Palette,
+        dark: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let (chosen, pointed) = (self.chosen == at, self.pointed == Some(at));
         let entry = &mut self.entries[at];
         let brief = &entry.brief;
@@ -467,6 +573,7 @@ impl Switcher {
         // than the paper: the same lines, broken at the same words.
         let small = WIDE / brief.window;
         let (body, margin) = (brief.body * small, (WIDE - brief.sheet * small) / 2.);
+        let rem = window.rem_size() * small;
         // The small page is taken to where the paper is, once it has blocks.
         if !entry.placed {
             let list = entry.page.read(cx).list_state().clone();
@@ -479,49 +586,65 @@ impl Switcher {
             }
         }
         let folder = brief.folder.clone();
+        // The room in a table is not counted in the small measure by what
+        // lays its columns out, so it is said outright.
+        let style = preview::style_at(p, body, dark, rem).with_table_cell(
+            StyleRefinement::default()
+                .px(px(12.) * small)
+                .py(px(8.) * small),
+        );
         let page = TextView::new(&entry.page)
             .scrollable(true)
             .selectable(false)
-            .style(preview::style(p, body, dark))
+            .style(style)
             .markdown_extensions(preview::extensions())
             .image_source(move |uri| preview::image_source(uri, folder.as_deref()))
+            // Nothing over a block of code: its name would not be small.
+            .code_block_actions(|_, _, _| div())
             .text_size(body)
             .line_height(relative(1.55))
-            .px(margin)
-            .pt(px(14.));
-        let lifted = chosen || pointed;
+            .pl(margin)
+            .pr(margin + BEYOND)
+            .pt(px(9.));
+        // The page fills the sheet, and is drawn with everything small. It
+        // is a little wider than the sheet, which cuts off what is beyond
+        // its edge: the bar a page shows as it is scrolled.
+        let page = Small {
+            rem,
+            page: div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(WIDE + BEYOND)
+                .child(page)
+                .into_any_element(),
+        };
         let sheet = div()
             .id(("small-page", at))
             .relative()
             .w(WIDE)
             .h(TALL)
-            .mt(if lifted { px(-4.) } else { px(0.) })
-            .mb(if lifted { px(4.) } else { px(0.) })
-            .rounded(size::RADIUS_MD)
+            .rounded(px(6.))
             .overflow_hidden()
             .bg(p.surface_preview)
             .border_1()
-            .border_color(if chosen { p.accent } else { p.border_subtle })
-            .map(|sheet| match lifted {
-                true => sheet.shadow_lg(),
-                false => sheet.shadow_sm(),
-            })
+            .border_color(p.border_subtle)
+            .shadow_sm()
             .child(page)
             // Nothing in a small page is clicked, selected or scrolled: the
             // page as a whole is what is chosen.
             .child(div().absolute().inset_0().occlude())
-            // The ring is drawn over the page, not around it, so that the
-            // pages do not move when it does.
-            .when(chosen, |sheet| {
-                sheet.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .rounded(size::RADIUS_MD)
-                        .border_2()
-                        .border_color(p.accent),
-                )
-            })
+            // How far it has been read: a thin line along its foot.
+            .children(brief.read.map(|far| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .bottom_0()
+                    .h(px(2.))
+                    .w(relative(far.clamp(0., 1.)))
+                    .bg(p.accent)
+            }))
             .on_hover(cx.listener(move |this, over: &bool, _, cx| {
                 this.pointed = match (*over, this.pointed) {
                     (true, _) => Some(at),
@@ -534,71 +657,37 @@ impl Switcher {
                 this.chosen = at;
                 this.choose(window, cx);
             }));
-        // How far it has been read: a line along the foot of the page.
-        let read =
-            div()
-                .mt(px(7.))
-                .h(px(3.))
-                .w(WIDE)
-                .rounded_full()
-                .when_some(brief.read, |line, far| {
-                    line.bg(p.border_subtle).child(
-                        div()
-                            .h_full()
-                            .w(relative(far.clamp(0., 1.)))
-                            .rounded_full()
-                            .bg(p.accent),
-                    )
-                });
-        let here = entry.paper == self.from;
-        let name = h_flex()
-            .mt(px(8.))
+        let name = div()
+            .flex()
+            .items_center()
+            .justify_center()
             .w(WIDE)
-            .gap(px(6.))
-            .when(here, |name| {
-                name.child(div().flex_none().size(px(6.)).rounded_full().bg(p.accent))
-            })
+            .h(UNDER)
             .child(
                 div()
-                    .flex_none()
-                    .max_w(px(110.))
+                    .max_w(WIDE)
                     .truncate()
-                    .text_size(px(12.5))
-                    .font_weight(match here || chosen {
-                        true => FontWeight::SEMIBOLD,
-                        false => FontWeight::MEDIUM,
+                    .text_size(px(11.))
+                    .map(|name| match chosen {
+                        true => name
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text_primary),
+                        false => name.text_color(p.text_tertiary),
                     })
-                    .text_color(p.text_primary)
                     .child(brief.name.clone()),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(11.))
-                    .text_color(p.text_tertiary)
-                    .child(brief.way.clone()),
-            )
-            .children(brief.read.map(|far| {
-                div()
-                    .flex_none()
-                    .text_size(px(11.))
-                    .text_color(p.text_tertiary)
-                    .child(format!("{}%", (far * 100.).round() as u32))
-            }));
+            );
         // Under the pointer, a paper can be closed from here.
         let close = pointed.then(|| {
             let hover = p.surface_hover;
             div()
                 .id(("close-paper", at))
                 .absolute()
-                .top(px(-14.))
-                .right(px(-11.))
+                .top(px(-7.))
+                .right(px(-7.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .size(px(24.))
+                .size(px(18.))
                 .rounded_full()
                 .border_1()
                 .border_color(p.border_strong)
@@ -606,19 +695,19 @@ impl Switcher {
                 .shadow_sm()
                 .text_color(p.text_secondary)
                 .hover(move |style| style.bg(hover))
-                .child(Icon::new(IconName::X).size(px(11.)))
+                .child(Icon::new(IconName::X).size(px(9.)))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
                     this.close(at, window, cx);
                 }))
         });
+        let place = place_of(at);
         v_flex()
-            .relative()
-            .flex_none()
+            .absolute()
+            .left(place.x)
+            .top(place.y)
             .w(WIDE)
-            .h(TALL + UNDER)
             .child(sheet)
-            .child(read)
             .child(name)
             .children(close)
     }
@@ -632,46 +721,45 @@ impl Render for Switcher {
         if !self.focus.is_focused(window) {
             self.focus.focus(window, cx);
         }
-        let mut rows = Vec::new();
-        for start in (0..self.entries.len()).step_by(ACROSS) {
-            let end = (start + ACROSS).min(self.entries.len());
-            let pages: Vec<Div> = (start..end)
-                .map(|at| self.render_page(at, &p, dark, cx))
-                .collect();
-            rows.push(h_flex().gap(GAP).items_start().children(pages));
-        }
-        let hint = |keys: &'static str, does: &'static str| {
-            h_flex()
-                .flex_none()
-                .gap(px(6.))
-                .child(key_cap(keys, p.text_secondary, p.surface_sunken))
-                .child(does)
-        };
-        let keys = h_flex()
-            .h(KEYS)
-            .justify_center()
-            .gap(px(16.))
-            .text_size(px(11.5))
-            .text_color(p.text_tertiary)
-            .child(hint("⇥", "next"))
-            .child(hint("⇧⇥", "back"))
-            .child(match self.held {
-                true => hint("let go of ⌃", "bring it to the front"),
-                false => hint("↵", "bring it to the front"),
-            })
-            .child(hint("W", "close it"))
-            .child(hint("esc", "back"));
-        let panel = v_flex()
-            .pt(PAD)
-            .px(PAD)
-            .gap(GAP)
-            .rounded(px(18.))
+        let pages: Vec<Div> = (0..self.entries.len())
+            .map(|at| self.render_page(at, &p, dark, window, cx))
+            .collect();
+        // The plate under the paper that will come forward. It glides from
+        // one page to the next.
+        let under = place_of(self.chosen);
+        let glide = motion::glide(motion::QUICK, cx);
+        let left = transition("switcher-plate-x", under.x, glide.clone(), window, cx);
+        let top = transition("switcher-plate-y", under.y, glide, window, cx);
+        let plate = div()
+            .absolute()
+            .left(left - PLATE)
+            .top(top - PLATE)
+            .w(WIDE + PLATE * 2.)
+            .h(TALL + UNDER + PLATE + px(2.))
+            .rounded(px(12.))
+            .bg(p.surface_selected);
+        let size = bar_size(self.entries.len());
+        let bar = div()
+            .relative()
+            .w(size.width)
+            .h(size.height)
+            .rounded(px(20.))
             .border_1()
-            .border_color(p.border_strong)
+            .border_color(p.border_raised)
             .bg(p.surface_raised)
             .shadow_lg()
-            .children(rows)
-            .child(keys);
+            .child(plate)
+            .children(pages)
+            // It comes up with a short fade, settling a few points down.
+            .with_animation(
+                "switcher-arrives",
+                Animation::new(match cx.reduce_motion() {
+                    true => Duration::from_millis(1),
+                    false => motion::QUICK,
+                })
+                .with_easing(motion::ease),
+                |bar, progress| bar.opacity(progress).mt(px(-8.) * (1. - progress)),
+            );
         div()
             .id("switcher")
             .size_full()
@@ -686,12 +774,12 @@ impl Render for Switcher {
             }))
             // Control Tab again, while Control is still held: the next paper.
             .on_action(cx.listener(|this, _: &LastFile, _, cx| this.step(1, cx)))
-            // Letting go of Control brings the paper the ring is on forward.
+            // Letting go of Control brings the paper on the plate forward.
             .on_modifiers_changed(
                 cx.listener(|this, event: &ModifiersChangedEvent, window, cx| {
                     this.let_go(event.modifiers, window, cx)
                 }),
             )
-            .child(panel)
+            .child(bar)
     }
 }
