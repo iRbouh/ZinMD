@@ -21,9 +21,9 @@ use std::time::Instant;
 
 use gpui_kit::*;
 
-use super::Workspace;
 use super::frame::{self, Frame};
 use super::switcher::Switcher;
+use super::{Mode, Workspace};
 use crate::session::Session;
 use crate::startup;
 use crate::system;
@@ -244,13 +244,23 @@ pub(super) fn frames(cx: &App) -> Vec<(AnyWindowHandle, [f32; 4])> {
     })
 }
 
-/// The paper that shows `path`, if one does.
-pub(super) fn showing(path: &Path, cx: &App) -> Option<AnyWindowHandle> {
+/// The paper where `path` is being read, if there is one other than `here`.
+/// The window a file is edited in is not a paper of it: asking for a file
+/// to read, when it is only open in the editor, opens a paper.
+pub(super) fn reading(path: &Path, here: AnyWindowHandle, cx: &App) -> Option<AnyWindowHandle> {
     let papers = cx.try_global::<Papers>()?;
     papers
         .open
         .iter()
-        .find(|paper| paper.shows.as_deref() == Some(path) && paper.workspace.upgrade().is_some())
+        // The paper asking is in the middle of being asked something, and
+        // cannot be read from outside: it answers for itself.
+        .filter(|paper| paper.window != here && paper.shows.as_deref() == Some(path))
+        .find(|paper| {
+            paper
+                .workspace
+                .upgrade()
+                .is_some_and(|workspace| workspace.read(cx).mode == Mode::Read)
+        })
         .map(|paper| paper.window)
 }
 

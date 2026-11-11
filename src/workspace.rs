@@ -657,8 +657,10 @@ impl Workspace {
 
     /// Open `path` as a paper of its own: a new window beside this one, a
     /// little down and to the right, with the same folders in its panel.
-    /// With no path it is an empty page. A file that already has a paper is
-    /// brought to the front instead.
+    /// With no path it is an empty page. A file that is being read in a
+    /// paper already has that paper brought to the front instead. A file
+    /// that is only open in the editor gets a paper: that is how to read
+    /// what is being edited.
     pub(super) fn open_beside(
         &mut self,
         path: Option<PathBuf>,
@@ -666,7 +668,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let path = path.map(|path| path.canonicalize().unwrap_or(path));
-        if let Some(there) = path.as_deref().and_then(|path| papers::showing(path, cx)) {
+        // This paper is reading it already.
+        let own = self.active_doc().and_then(|doc| doc.path.as_deref());
+        if self.mode == Mode::Read && path.is_some() && own == path.as_deref() {
+            return;
+        }
+        let here = window.window_handle();
+        let there = path
+            .as_deref()
+            .and_then(|path| papers::reading(path, here, cx));
+        if let Some(there) = there {
             return cx.defer(move |cx| {
                 there
                     .update(cx, |_, window, _| window.activate_window())
