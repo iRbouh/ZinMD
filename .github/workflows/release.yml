@@ -13,8 +13,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-    # For now, while the pipeline itself is being tried out.
-    branches: [release-pipeline]
   workflow_dispatch:
 
 concurrency:
